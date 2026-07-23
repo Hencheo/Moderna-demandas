@@ -207,8 +207,7 @@ class DownloadOrchestrator {
    * Força análise completa do chamado (gatilho manual).
    */
   async forceAnalyze(protocolo) {
-    const pasta = this._organizer.getDestPath({ protocolo, fileName: '' });
-    const pastaDir = path.dirname(pasta);
+    const pastaDir = path.join(config.paths.chamadosDir, String(protocolo));
     return await this._analysis.analyze({ protocolo, chamadosDir: pastaDir });
   }
 
