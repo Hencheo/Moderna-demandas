@@ -197,13 +197,14 @@
 
   function handlePollResult(data) {
     if (!data) return;
-    const { solicitacoes: sols, diff: d } = data;
+    const { solicitacoes: sols, diff: d, downloads } = data;
     solicitacoes = sols;
     renderDiff(d);
     renderTable(sols);
     updateCount();
+    handleDownloads(downloads);
     secondsSincePoll = 0;
-    addLog('', `📥 Busca concluída - ${sols.length} solicitações`);
+    addLog('', `📥 Busca concluída - ${sols.length} solicitações` + (downloads?.length ? `, ${downloads.length} anexo(s)` : ''));
   }
 
   // --- Polling ---
@@ -222,6 +223,14 @@
       addLog('error', `❌ Erro: ${err}`);
       statusBadge.textContent = '❌ Erro';
       statusBadge.className = 'badge error';
+    }
+  }
+
+  function handleDownloads(downloads) {
+    if (!downloads || downloads.length === 0) return;
+    for (const d of downloads) {
+      showNotification('new', `📎 #${d.protocolo} ${d.message}`);
+      addLog('new', `📎 #${d.protocolo} → ${d.nome}`);
     }
   }
 

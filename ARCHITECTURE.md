@@ -163,6 +163,34 @@ O `FileOrganizerService` decide:
 2. Se já existe localmente, compara data vs mtime
 3. Só baixa se o servidor tiver versão mais nova
 
+### Fluxo integrado ao polling
+
+A cada 5 minutos, o polling agora também verifica anexos:
+
+```
+poll()
+  ├── auth.login()
+  ├── scraper.fetchSolicitacoes()
+  ├── diffService.compare()
+  ├── for each solicitação ativa:
+  │     anexoService.getLatestTimestamp(protocolo)
+  │     if timestamp > stored.lastTimestamp:
+  │       download → ~/Desktop/Chamados/{protocolo}/
+  │       atualiza stored.lastTimestamp
+  ├── stateRepo.save(solicitacoes, anexosTimestamps)
+  └── notifica renderer + sistema
+```
+
+**Browser persistente**: o Chrome headless é aberto uma única vez e
+reutilizado entre polls. O `_login()` detecta se a sessão ainda está
+válida e só faz login completo quando necessário (~3s na primeira vez,
+~0.5s nas subsequentes).
+
+**Timestamps**: o `incluidoEm` do SISCON é armazenado no `state.json`
+como `anexos["protocolo"].lastTimestamp`. Na próxima verificação,
+compara-se esse valor — se o timestamp do servidor for igual ou anterior,
+o download é pulado.
+
 ---
 
 ## 3. Fluxo de Dados (exemplo: polling)

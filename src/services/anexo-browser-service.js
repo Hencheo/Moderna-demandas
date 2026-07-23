@@ -2,11 +2,12 @@
  * src/services/anexo-browser-service.js
  * Serviço de extração de anexos usando navegação real (Puppeteer).
  *
- * O grid de anexos do SISCON carrega via ASP.NET AJAX UpdatePanel,
- * então o HTML inicial não contém os dados. Precisamos de um navegador
- * real para executar o JavaScript e renderizar o grid.
+ * O grid de anexos do SISCON carrega via ASP.NET AJAX UpdatePanel —
+ * o HTML inicial não contém os dados. Usamos Chrome headless.
  *
- * Download URL pattern: /DownloadFile.ashx?prms=<base64>
+ * Download URL: /DownloadFile.ashx?prms=<base64>
+ *
+ * Performance: mantém browser persistente entre chamadas.
  */
 const path = require('path');
 const fs = require('fs');
@@ -16,9 +17,10 @@ const Anexo = require('../models/anexo');
 class AnexoBrowserService {
   constructor() {
     this._browser = null;
+    this._page = null;
   }
 
-  async _getBrowser() {
+  async _ensureBrowser() {
     if (!this._browser) {
       const puppeteer = require('puppeteer-core');
       this._browser = await puppeteer.launch({
@@ -30,7 +32,28 @@ class AnexoBrowserService {
     return this._browser;
   }
 
-  async _login(page) {
+  async _ensurePage() {
+    const browser = await this._ensureBrowser();
+    if (!this._page || this._page.isClosed()) {
+      this._page = await browser.newPage();
+      await this._page.setViewport({ width: 1280, height: 800 });
+    }
+    return this._page;
+  }
+
+  async _login() {
+    const page = await this._ensurePage();
+    // Verifica se já está logado tentando acessar uma página autenticada
+    const checkResp = await page.goto(
+      `${config.siscon.baseUrl}/siscon/e/Solicitacoes/Consultar.aspx`,
+      { waitUntil: 'domcontentloaded', timeout: 10000 }
+    );
+    const checkText = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '');
+    if (checkText.includes('SMSs') || checkText.includes('Protocolo')) {
+      return; // Já logado
+    }
+
+    // Login completo
     await page.goto(`${config.siscon.baseUrl}${config.siscon.loginPath}`, {
       waitUntil: 'networkidle0',
     });
@@ -41,32 +64,79 @@ class AnexoBrowserService {
   }
 
   /**
-   * Extrai a lista de anexos de uma solicitação.
+   * Retorna APENAS o timestamp ISO do anexo mais recente de um protocolo.
+   * Mais rápido que fetchAnexos() porque não extrai dados completos.
    *
    * @param {number} protocolo
-   * @returns {Promise<Anexo[]>}
+   * @returns {Promise<{timestamp: string, nome: string, downloadUrl: string}|null>}
    */
-  async fetchAnexos(protocolo) {
-    const browser = await this._getBrowser();
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+  async getLatestTimestamp(protocolo) {
+    const page = await this._ensurePage();
+    await this._login();
 
     try {
-      // 1. Login
-      await this._login(page);
-
-      // 2. Navegar para página da solicitação
+      // Navega para página da solicitação
       const solUrl = `${config.siscon.baseUrl}/siscon/e/solicitacoes/Solicitacao.aspx?key=${protocolo}&p=1`;
       await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 20000 });
 
-      // 3. Clicar na aba Anexos para ativar o UpdatePanel
+      // Clica aba Anexos para ativar o UpdatePanel
       await page.evaluate(() => {
         const tab = document.querySelector('a[data-widget-id="WIDGETID_ANEXOS"]');
         if (tab) tab.click();
       });
       await new Promise(r => setTimeout(r, 3000));
 
-      // 4. Extrair dados do grid
+      // Extrai APENAS o timestamp do primeiro anexo (mais recente por sort padrão)
+      const result = await page.evaluate(() => {
+        const tbody = document.querySelector(
+          '#ctl00_Main_ucSolicitacao_WIDGETID_ANEXOS_SimpleGrid tbody'
+        );
+        if (!tbody || !tbody.querySelector('tr')) return null;
+
+        const firstRow = tbody.querySelector('tr');
+        const link = firstRow.querySelector('td[data-field="ARQUIVO"] a');
+        if (!link) return null;
+
+        return {
+          nome: link.textContent.trim(),
+          downloadUrl: link.getAttribute('href'),
+          incluidoEm: firstRow.querySelector('td[data-field="INCLUSAO"]')?.textContent?.trim() || '',
+        };
+      });
+
+      if (!result || !result.incluidoEm) return null;
+
+      return {
+        timestamp: this._parseDate(result.incluidoEm).toISOString(),
+        nome: result.nome,
+        downloadUrl: result.downloadUrl.startsWith('http')
+          ? result.downloadUrl
+          : `${config.siscon.baseUrl}${result.downloadUrl}`,
+      };
+    } catch (err) {
+      console.error(`getLatestTimestamp(${protocolo}):`, err.message);
+      // Se falhou (sessão expirou?), tenta relogar na próxima
+      this._page = null;
+      return null;
+    }
+  }
+
+  /**
+   * Extrai TODOS os anexos (para exibição detalhada).
+   */
+  async fetchAnexos(protocolo) {
+    const page = await this._ensurePage();
+    await this._login();
+    const solUrl = `${config.siscon.baseUrl}/siscon/e/solicitacoes/Solicitacao.aspx?key=${protocolo}&p=1`;
+
+    try {
+      await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+      await page.evaluate(() => {
+        const tab = document.querySelector('a[data-widget-id="WIDGETID_ANEXOS"]');
+        if (tab) tab.click();
+      });
+      await new Promise(r => setTimeout(r, 3000));
+
       const rawAnexos = await page.evaluate(() => {
         const rows = [];
         const tbody = document.querySelector(
@@ -77,7 +147,6 @@ class AnexoBrowserService {
         tbody.querySelectorAll('tr').forEach(tr => {
           const link = tr.querySelector('td[data-field="ARQUIVO"] a');
           if (!link) return;
-
           rows.push({
             nome: link.textContent.trim(),
             downloadUrl: link.getAttribute('href'),
@@ -101,18 +170,14 @@ class AnexoBrowserService {
         publico: a.publico,
         protocolo,
       }));
-
-    } finally {
-      await page.close();
+    } catch (err) {
+      this._page = null;
+      throw err;
     }
   }
 
   /**
-   * Faz o download de um arquivo usando o HttpClient autenticado.
-   * O DownloadFile.ashx requer os cookies de sessão.
-   *
-   * @param {string} url - URL absoluta do arquivo
-   * @param {string} destPath - Caminho de destino
+   * Faz o download de um arquivo usando HttpClient autenticado.
    */
   async downloadFile(url, destPath) {
     const HttpClient = require('../utils/http-client');
@@ -130,7 +195,6 @@ class AnexoBrowserService {
       __EVENTARGUMENT: '',
     });
 
-    // Faz download via stream
     const resp = await http.request(url, { method: 'GET' });
     const buffer = Buffer.from(await resp.arrayBuffer());
 
@@ -144,7 +208,6 @@ class AnexoBrowserService {
 
   _parseDate(dateStr) {
     if (!dateStr) return new Date(0);
-    // Formato: DD/MM/AAAA HH:MM
     const parts = dateStr.match(/(\d{2})\/(\d{2})\/(\d{4})\s*(\d{2}):(\d{2})/);
     if (parts) {
       return new Date(parts[3], parts[2] - 1, parts[1], parts[4], parts[5]);
@@ -153,6 +216,10 @@ class AnexoBrowserService {
   }
 
   async close() {
+    if (this._page && !this._page.isClosed()) {
+      await this._page.close();
+      this._page = null;
+    }
     if (this._browser) {
       await this._browser.close();
       this._browser = null;
