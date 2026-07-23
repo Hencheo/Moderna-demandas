@@ -15,6 +15,7 @@ const config = require('../config');
 const AnexoBrowserService = require('./anexo-browser-service');
 const FileOrganizerService = require('./file-organizer-service');
 const FileRepository = require('../repositories/file-repository');
+const SummaryService = require('./summary-service');
 
 const log = (ctx, msg) =>
   console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Download] ${ctx} → ${msg}`);
@@ -24,6 +25,7 @@ class DownloadOrchestrator {
     this._anexoService = new AnexoBrowserService();
     this._organizer = new FileOrganizerService();
     this._fileRepo = new FileRepository();
+    this._summary = new SummaryService();
     this._currentUser = (config.siscon.user || '').toUpperCase();
     log('init', `usuário atual = ${this._currentUser}`);
   }
@@ -70,6 +72,18 @@ class DownloadOrchestrator {
       const buffer = await this._anexoService.downloadFile(latest.downloadUrl);
       this._fileRepo.writeFile(destPath, buffer);
       this._fileRepo.removePartialDownload(destPath);
+
+      // Gera/atualiza resumo.md via LLM
+      try {
+        await this._summary.updateResumo({
+          protocolo,
+          docxPath: destPath,
+          autor: latest.incluidoPor,
+          dataISO: latest.timestamp,
+        });
+      } catch (summaryErr) {
+        log(`#${protocolo}`, `ERRO no resumo: ${summaryErr.message} (download mantido)`);
+      }
 
       const stat = this._fileRepo.stat(destPath);
       log(`#${protocolo}`, `DOWNLOAD OK — ${stat ? (stat.size / 1024).toFixed(1) : '?'} KB`);
@@ -118,6 +132,15 @@ class DownloadOrchestrator {
     const buffer = await this._anexoService.downloadFile(latest.downloadUrl);
     this._fileRepo.writeFile(destPath, buffer);
     this._fileRepo.removePartialDownload(destPath);
+
+    try {
+      await this._summary.updateResumo({
+        protocolo, docxPath: destPath,
+        autor: latest.incluidoPor, dataISO: latest.timestamp,
+      });
+    } catch (summaryErr) {
+      log(`#${protocolo}`, `ERRO no resumo: ${summaryErr.message}`);
+    }
 
     const stat = this._fileRepo.stat(destPath);
     log(`#${protocolo}`, `FORÇADO OK — ${stat ? (stat.size / 1024).toFixed(1) : '?'} KB`);

@@ -54,6 +54,14 @@ const config = {
       'Desktop', 'Chamados'
     ),
   },
+
+  // LLM (Nous Research / OpenAI-compatible)
+  llm: {
+    baseUrl: process.env.LLM_BASE_URL || 'https://inference-api.nousresearch.com/v1',
+    apiKey: process.env.NOUS_API_KEY || process.env.LLM_API_KEY || '',
+    model: process.env.LLM_MODEL || 'deepseek/deepseek-v4-flash',
+    maxTokens: parseInt(process.env.LLM_MAX_TOKENS || '4096', 10),
+  },
 };
 
 module.exports = config;
