@@ -1,13 +1,18 @@
 /**
  * src/services/analysis-service.js
- * Serviço de análise de chamado — orquestra a geração de diagnóstico.
+ * Serviço de análise de chamado.
  *
- * Responsabilidade: coordenar a busca de branches, diff e LLM para gerar
- * um diagnóstico completo do chamado.
+ * Responsabilidade: gerar um resumo completo e estruturado que outro LLM
+ * vai consumir depois para verificar o código.
  *
- * I/O de arquivo: delega ao FileRepository.
- * Interação com git: delega ao GitService.
- * Interação com ADO: delega ao AdoService.
+ * Regras:
+ * - NUNCA faz checkout de branch (só verifica)
+ * - Se branch atual == branch do chamado → análise completa com diff
+ * - Se branch atual != branch do chamado → análise parcial + aviso no final
+ * - O resumo conta a história da última atualização e faz as perguntas certas
+ * - Imagens do .docx serão analisadas (futuro)
+ *
+ * I/O → FileRepository | git → GitService | ADO → AdoService
  */
 const path = require('path');
 const LlmClient = require('../utils/llm-client');
@@ -19,6 +24,8 @@ const FileRepository = require('../repositories/file-repository');
 const log = (ctx, msg) =>
   console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Analysis] ${ctx} → ${msg}`);
 
+const STATUS_FINALIZADOS = ['finalizado', 'cancelado', 'recusado', 'aprovado'];
+
 class AnalysisService {
   constructor() {
     this._llm = new LlmClient();
@@ -28,151 +35,200 @@ class AnalysisService {
     this._fileRepo = new FileRepository();
   }
 
-  async analyze({ protocolo, chamadosDir, docxPath }) {
+  async analyze({ protocolo, chamadosDir, docxPath, situacao }) {
     const pasta = chamadosDir || path.dirname(docxPath || '');
-    const resumoPath = path.join(pasta, 'resumo.md');
+    const resumoPath = path.join(pasta, 'resumo.docx');
     const docx = docxPath || this._findDocx(pasta);
+
+    if (situacao && STATUS_FINALIZADOS.includes(situacao.toLowerCase())) {
+      log(`#${protocolo}`, `situação "${situacao}" — análise pulada`);
+      if (this._fileRepo.exists(resumoPath))
+        return { analisou: false, message: 'Chamado finalizado', alerts: [] };
+    }
 
     log(`#${protocolo}`, '--- INÍCIO ---');
 
-    const resumoAtual = this._fileRepo.exists(resumoPath)
-      ? this._fileRepo.readFile(resumoPath)
-      : '';
-
-    // 1. Busca branches LOCAIS
-    const branchesLocais = this._git.listBranches(String(protocolo));
-    const branchAtual = this._git.currentBranch();
-    let targetBranch = null;
-    let diffArquivos = [];
-    let diffTexto = '';
-    const alerts = [];
-
-    if (branchesLocais.length > 0) {
-      targetBranch = branchesLocais.find(b => b.includes('_DEV')) || branchesLocais[0];
-      log(`#${protocolo}`, `branch local: ${targetBranch}`);
-
-      if (branchAtual === targetBranch) {
-        log(`#${protocolo}`, 'branch atual coincide — diff local');
-        const diff = this._git.getDiff('Development...HEAD');
-        diffArquivos = diff.files;
-        diffTexto = diff.content;
-      } else {
-        alerts.push(
-          `⚠️ **Branch diferente:** você está em \`${branchAtual}\`, ` +
-          `mas #${protocolo} está em \`${targetBranch}\`. ` +
-          `Para análise completa, faça checkout manual.`
-        );
-      }
-
-      const outras = branchesLocais.filter(b => b !== targetBranch);
-      if (outras.length > 0) alerts.push(`ℹ️ Outras branches: ${outras.join(', ')}`);
-    } else {
-      alerts.push(`ℹ️ Nenhuma branch local para #${protocolo}.`);
-    }
-
-    // 2. ADO como fallback
-    let prInfo = null;
-    if (!diffArquivos.length) {
+    // Carrega resumo anterior (.docx → texto via mammoth)
+    let textoAnterior = '';
+    if (this._fileRepo.exists(resumoPath)) {
       try {
-        const remoteBranches = await this._ado.searchBranches(String(protocolo));
-        if (remoteBranches.length > 0) {
-          const rb = remoteBranches.find(b => b.name.includes('_DEV')) || remoteBranches[0];
-          prInfo = await this._ado.findPRByBranch(rb.ref);
-        }
+        const buf = this._fileRepo.readFileBuffer(resumoPath);
+        const mammoth = require('mammoth');
+        const r = await mammoth.extractRawText({ buf });
+        textoAnterior = r.value;
       } catch (_) {}
     }
 
-    // 3. Gera diagnóstico via LLM
+    // Verifica branch (NUNCA checkout)
+    const branchAtual = this._git.currentBranch();
+    const branchesLocais = this._git.listBranches(String(protocolo));
+    const targetBranch = branchesLocais.find(b => b.includes('_DEV')) || branchesLocais[0] || null;
+    const naBranchCorreta = targetBranch && branchAtual === targetBranch;
+
+    let diffArquivos = [];
+    let diffTexto = '';
+    let prInfo = null;
+
+    if (naBranchCorreta) {
+      log(`#${protocolo}`, `branch correta: ${branchAtual}`);
+      const diff = this._git.getDiff('Development...HEAD');
+      diffArquivos = diff.files;
+      diffTexto = diff.content;
+    } else {
+      log(`#${protocolo}`, `branch atual: ${branchAtual} | alvo: ${targetBranch || 'nenhuma'}`);
+    }
+
+    // ADO complementar (PR info)
+    try {
+      const remote = await this._ado.searchBranches(String(protocolo));
+      if (remote.length > 0) {
+        const rb = remote.find(b => b.name.includes('_DEV')) || remote[0];
+        prInfo = await this._ado.findPRByBranch(rb.ref);
+      }
+    } catch (_) {}
+
+    // Gera diagnóstico
     const diagnostic = await this._generateDiagnostic({
-      protocolo, resumoAtual, docx, diffArquivos, diffTexto,
-      branchAtual, targetBranch, branchesLocais, prInfo, alerts,
+      protocolo,
+      textoAnterior,
+      docx,
+      diffArquivos,
+      diffTexto,
+      branchAtual,
+      targetBranch,
+      naBranchCorreta,
+      prInfo,
     });
 
-    // 4. Atualiza resumo.docx
+    // Salva resumo.docx
     if (diagnostic) {
-      const pasta = chamadosDir || path.dirname(docxPath || '');
-      const resumoPath = path.join(pasta, 'resumo.docx');
-
-      // Lê resumo anterior (.docx) se existir
-      let textoAnterior = '';
-      if (this._fileRepo.exists(resumoPath)) {
-        try {
-          const buffer = this._fileRepo.readFileBuffer(resumoPath);
-          const mammoth = require('mammoth');
-          const r = await mammoth.extractRawText({ buffer });
-          textoAnterior = r.value;
-        } catch (_) {}
-      }
-
-      const novoCompleto = textoAnterior
-        ? `${textoAnterior}\n\n${diagnostic}`
+      const texto = textoAnterior
+        ? `${textoAnterior}\n\n---\n\n${diagnostic}`
         : diagnostic;
-
       const buffer = await this._docx.generate(
-        `Diagnóstico - Chamado ${protocolo}`,
-        novoCompleto
+        `Chamado ${protocolo} - Resumo`,
+        texto
       );
       this._fileRepo.writeFile(resumoPath, buffer);
-      log(`#${protocolo}`, 'resumo.docx atualizado');
+      log(`#${protocolo}`, 'resumo.docx salvo');
     }
 
     log(`#${protocolo}`, '--- FIM ---');
-    return { analisou: !!diagnostic, message: diagnostic ? 'Diagnóstico gerado' : 'Falha', alerts };
+    return {
+      analisou: !!diagnostic,
+      message: diagnostic ? 'Resumo gerado' : 'Falha',
+      alerts: [],
+    };
   }
 
-  async _generateDiagnostic({ protocolo, resumoAtual, docx, diffArquivos, diffTexto, branchAtual, targetBranch, branchesLocais, prInfo, alerts }) {
-    const system = `Você é um analista técnico especializado em C# ASP.NET MVC.
-Gere um diagnóstico de chamado seguindo este formato:
-
-## 🔍 Diagnóstico — Chamado #{numero}
-
-### Branch / PR
-{status}
-
-### O que o chamado pede
-{resumo do problema}
-
-### O que foi alterado
-{principais arquivos e mudanças}
-
-### Análise
-{cruzar problema com alterações}
-{risco de regressão?}
-{precisa de verificação em banco?}
-
-### Ação recomendada
-{próximos passos}`;
-
-    const branchInfo = targetBranch
-      ? `Branch: ${targetBranch}${branchAtual === targetBranch ? ' (atual)' : ` (você está em ${branchAtual})`}`
-      : 'Nenhuma branch local';
-
-    const diffSection = diffTexto
-      ? `### Diff\n\`\`\`\n${diffTexto.slice(0, 20000)}\n\`\`\``
-      : diffArquivos.length > 0
-        ? `Arquivos:\n${diffArquivos.join('\n')}`
-        : 'Diff não disponível.';
-
+  async _generateDiagnostic({
+    protocolo, textoAnterior, docx,
+    diffArquivos, diffTexto,
+    branchAtual, targetBranch, naBranchCorreta, prInfo,
+  }) {
     const docContent = docx && this._fileRepo.exists(docx)
       ? await this._extractDocxText(docx)
       : '';
 
+    if (naBranchCorreta && diffTexto) {
+      // === MODO COMPLETO: na branch certa com diff ===
+      const system = `Você é um analista técnico especializado em C# ASP.NET MVC.
+
+Produza um relatório ESTRUTURADO de análise de chamado seguindo este formato.
+Cada seção será lida e processada por outra inteligência artificial.
+
+## Chamado #{numero}
+
+### Problema Reportado
+{descrição objetiva do problema}
+
+### Histórico de Atualizações
+{cronologia: quem fez o quê e quando, extraído do documento}
+
+### Branch Analisada
+{nome da branch}
+
+### Resumo das Alterações
+{principais arquivos alterados e o que mudou em cada um}
+
+### Análise Técnica
+
+1. **Causa Raiz:** As alterações explicam o erro reportado? Justifique.
+2. **Risco de Regressão:** Qual a probabilidade de quebrar outras funcionalidades?
+3. **Impacto em Banco:** Há scripts de banco ou procedures? Estão corretos?
+4. **Padrões de Código:** As alterações seguem os padrões do projeto (camadas, DbUp, resources)?
+5. **Perguntas Pendentes:** O que ainda precisa ser verificado no código para confirmar o diagnóstico?
+
+### Conclusão
+{recomendação final}`;
+
+      const prompt = `## Chamado #${protocolo}
+${textoAnterior ? `\n### Análise Anterior\n${textoAnterior.slice(0, 5000)}` : ''}
+${docContent ? `\n### Conteúdo do Documento\n${docContent.slice(0, 10000)}` : ''}
+
+### Branch
+${branchAtual}
+${prInfo ? `\nPR #${prInfo.id}: ${prInfo.title}` : ''}
+
+### Diff (${diffArquivos.length} arquivos)
+${diffTexto.slice(0, 25000)}
+
+Gere o relatório estruturado.`;
+
+      try {
+        log(`#${protocolo}`, 'LLM — modo completo com diff...');
+        return await this._llm.ask(system, prompt);
+      } catch (err) {
+        log(`#${protocolo}`, `erro LLM: ${err.message}`);
+        return null;
+      }
+    }
+
+    // === MODO PARCIAL: sem diff (branch errada ou sem branch) ===
+    const system = `Você é um analista técnico.
+
+Produza um relatório ESTRUTURADO seguindo este formato.
+
+## Chamado #{numero}
+
+### Problema Reportado
+{descrição objetiva do problema extraída do documento}
+
+### Histórico de Atualizações
+{cronologia: quem fez o quê e quando}
+
+### Branch Atual
+{nome da branch atual — não é a branch do chamado}
+
+### Conteúdo Disponível para Análise
+{o que foi possível extrair do documento}
+
+### Perguntas para Verificação
+{liste perguntas objetivas que outro desenvolvedor/LLM precisa responder ao analisar o código:
+- O erro descrito foi causado por alterações recentes?
+- Qual arquivo/controller/model foi alterado?
+- Há procedure ou script de banco envolvido?
+- O que precisa ser verificado no diff?
+}
+
+**Nota:** Para análise completa (diff do código, verificação de alterações, risco de regressão), faça checkout para a branch \`${targetBranch || 'do chamado'}\` e execute a análise novamente.`;
+
+    const branchInfo = targetBranch
+      ? `Branch atual: ${branchAtual}\nBranch do chamado: ${targetBranch} (diferente — análise parcial)`
+      : `Branch atual: ${branchAtual}\nNenhuma branch local encontrada para #${protocolo}.`;
+
     const prompt = `## Chamado #${protocolo}
-${resumoAtual ? `\n### Resumo\n${resumoAtual}` : ''}
-${docContent ? `\n### Documento\n${docContent.slice(0, 10000)}` : ''}
+${textoAnterior ? `\n### Análise Anterior\n${textoAnterior.slice(0, 5000)}` : ''}
+${docContent ? `\n### Conteúdo do Documento\n${docContent.slice(0, 15000)}` : ''}
 
 ### Branches
 ${branchInfo}
-${branchesLocais.length > 1 ? `\nTodas: ${branchesLocais.join(', ')}` : ''}
 ${prInfo ? `\nPR remoto: #${prInfo.id} - ${prInfo.title}` : ''}
 
-${diffSection}
-${alerts.length ? `\n### Alertas\n${alerts.join('\n')}` : ''}
-
-Gere o diagnóstico completo.`;
+Gere o relatório parcial.`;
 
     try {
-      log(`#${protocolo}`, 'enviando para LLM...');
+      log(`#${protocolo}`, `LLM — modo parcial (branch: ${branchAtual})...`);
       return await this._llm.ask(system, prompt);
     } catch (err) {
       log(`#${protocolo}`, `erro LLM: ${err.message}`);
@@ -192,7 +248,7 @@ Gere o diagnóstico completo.`;
   _findDocx(pasta) {
     if (!this._fileRepo.exists(pasta)) return null;
     const files = this._fileRepo.readdir(pasta);
-    const docx = files.filter(f => f.endsWith('.docx')).sort().reverse();
+    const docx = files.filter(f => f.endsWith('.docx') && f !== 'resumo.docx').sort().reverse();
     return docx.length > 0 ? path.join(pasta, docx[0]) : null;
   }
 }

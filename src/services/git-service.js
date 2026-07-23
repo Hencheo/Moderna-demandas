@@ -3,7 +3,7 @@
  * Serviço de interação com git local.
  *
  * Responsabilidade: consultar branch atual, verificar existência de branches,
- * obter diff de alterações. NUNCA faz checkout.
+ * obter diff de alterações. Pode fazer checkout quando solicitado.
  * NUNCA contém regra de negócio de chamados ou PRs.
  */
 const { execSync } = require('child_process');
@@ -59,6 +59,17 @@ class GitService {
 
     log('getDiff', `${files.length} arquivo(s)`);
     return { files, content: content.slice(0, 50000) };
+  }
+
+  /**
+   * Faz checkout de uma branch.
+   * @param {string} branchName
+   * @returns {boolean} true se checkout OK
+   */
+  checkout(branchName) {
+    log('checkout', `trocando para ${branchName}...`);
+    const result = this._git(`checkout ${branchName}`);
+    return result !== null;
   }
 }
 
