@@ -10,6 +10,7 @@
     "jest": "jest"
   },
   "dependencies": {
+    "docx": "^9.7.1",
     "electron": "^33.0.0",
     "mammoth": "^1.12.0",
     "puppeteer-core": "^25.3.0"

@@ -11,6 +11,7 @@
  */
 const path = require('path');
 const LlmClient = require('../utils/llm-client');
+const DocxGenerator = require('../utils/docx-generator');
 const AdoService = require('./ado-service');
 const GitService = require('./git-service');
 const FileRepository = require('../repositories/file-repository');
@@ -21,6 +22,7 @@ const log = (ctx, msg) =>
 class AnalysisService {
   constructor() {
     this._llm = new LlmClient();
+    this._docx = new DocxGenerator();
     this._ado = new AdoService();
     this._git = new GitService();
     this._fileRepo = new FileRepository();
@@ -86,13 +88,32 @@ class AnalysisService {
       branchAtual, targetBranch, branchesLocais, prInfo, alerts,
     });
 
-    // 4. Atualiza resumo.md (via FileRepository)
+    // 4. Atualiza resumo.docx
     if (diagnostic) {
-      const novoResumo = resumoAtual
-        ? `${resumoAtual}\n\n${diagnostic}`
+      const pasta = chamadosDir || path.dirname(docxPath || '');
+      const resumoPath = path.join(pasta, 'resumo.docx');
+
+      // Lê resumo anterior (.docx) se existir
+      let textoAnterior = '';
+      if (this._fileRepo.exists(resumoPath)) {
+        try {
+          const buffer = this._fileRepo.readFileBuffer(resumoPath);
+          const mammoth = require('mammoth');
+          const r = await mammoth.extractRawText({ buffer });
+          textoAnterior = r.value;
+        } catch (_) {}
+      }
+
+      const novoCompleto = textoAnterior
+        ? `${textoAnterior}\n\n${diagnostic}`
         : diagnostic;
-      this._fileRepo.writeFile(resumoPath, Buffer.from(novoResumo, 'utf-8'));
-      log(`#${protocolo}`, 'resumo.md atualizado');
+
+      const buffer = await this._docx.generate(
+        `Diagnóstico - Chamado ${protocolo}`,
+        novoCompleto
+      );
+      this._fileRepo.writeFile(resumoPath, buffer);
+      log(`#${protocolo}`, 'resumo.docx atualizado');
     }
 
     log(`#${protocolo}`, '--- FIM ---');

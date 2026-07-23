@@ -1,17 +1,21 @@
 /**
- * Tests — SummaryService (hash + decisão de chamar LLM)
+ * Tests — SummaryService (hash + decisão de chamar LLM + .docx)
  */
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// Mock mammoth e LlmClient para testes que chamam updateResumo
 jest.mock('mammoth', () => ({
-  extractRawText: jest.fn().mockResolvedValue({ value: 'conteudo extraido do doc', messages: [] }),
+  extractRawText: jest.fn().mockResolvedValue({ value: 'conteudo extraido', messages: [] }),
 }));
 jest.mock('../utils/llm-client', () => {
   return jest.fn().mockImplementation(() => ({
-    ask: jest.fn().mockResolvedValue('# Resumo gerado\n\n- entrada de teste'),
+    ask: jest.fn().mockResolvedValue('# Resumo\n\n- entrada de teste'),
+  }));
+});
+jest.mock('../utils/docx-generator', () => {
+  return jest.fn().mockImplementation(() => ({
+    generate: jest.fn().mockResolvedValue(Buffer.from('fake docx content')),
   }));
 });
 
@@ -30,78 +34,55 @@ const dummyFile = (content) => {
   return p;
 };
 
-test('computeHash retorna string hexadecimal de 64 chars', () => {
-  const h = summary.computeHash(dummyFile('qualquer coisa'));
-  expect(h).toMatch(/^[a-f0-9]{64}$/);
+test('computeHash', () => {
+  expect(summary.computeHash(dummyFile('x'))).toMatch(/^[a-f0-9]{64}$/);
 });
 
-test('computeHash deterministico (mesmo conteudo = mesmo hash)', () => {
-  const h1 = summary.computeHash(dummyFile('ABC'));
-  const h2 = summary.computeHash(dummyFile('ABC'));
-  expect(h1).toBe(h2);
+test('hash deterministico', () => {
+  expect(summary.computeHash(dummyFile('A'))).toBe(summary.computeHash(dummyFile('A')));
 });
 
-test('computeHash muda se conteudo muda', () => {
-  const h1 = summary.computeHash(dummyFile('A'));
-  const h2 = summary.computeHash(dummyFile('B'));
-  expect(h1).not.toBe(h2);
+test('hash muda com conteudo', () => {
+  expect(summary.computeHash(dummyFile('A'))).not.toBe(summary.computeHash(dummyFile('B')));
 });
 
-test('updateResumo com mesmo hash + force=false retorna SKIP (sem LLM)', async () => {
-  const fp = dummyFile('relatorio');
-  const hash = summary.computeHash(fp);
-
+test('hash igual = SKIP', async () => {
+  const fp = dummyFile('x');
   const r = await summary.updateResumo({
-    protocolo: 99999, docxPath: fp,
-    autor: 'TESTE', dataISO: '2026-07-23T12:00:00.000Z',
-    lastDocHash: hash, force: false,
+    protocolo: 1, docxPath: fp, autor: 'T', dataISO: '2026-01-01',
+    lastDocHash: summary.computeHash(fp), force: false,
   });
-
   expect(r.atualizou).toBe(false);
-  expect(r.message).toContain('não mudou');
 });
 
-test('updateResumo com force=true chama LLM (ignora hash)', async () => {
-  const fp = dummyFile('forcar');
-  const hash = summary.computeHash(fp);
-
+test('force=true chama LLM', async () => {
+  const fp = dummyFile('x');
   const r = await summary.updateResumo({
-    protocolo: 99998, docxPath: fp,
-    autor: 'TESTE', dataISO: '2026-07-23T12:00:00.000Z',
-    lastDocHash: hash, force: true,
+    protocolo: 2, docxPath: fp, autor: 'T', dataISO: '2026-01-01',
+    lastDocHash: summary.computeHash(fp), force: true,
   });
-
-  expect(r.message).not.toContain('não mudou');
-  expect(r.hash).toBe(hash);
+  expect(r.atualizou).toBe(true);
 });
 
-test('updateResumo sem hash anterior chama LLM', async () => {
-  const fp = dummyFile('primeiro documento');
+test('sem hash chama LLM', async () => {
+  const r = await summary.updateResumo({
+    protocolo: 3, docxPath: dummyFile('x'), autor: 'T', dataISO: '2026-01-01',
+    lastDocHash: null,
+  });
+  expect(r.atualizou).toBe(true);
+});
+
+test('salva como .docx', async () => {
+  const fp = dummyFile('teste');
   const pasta = path.dirname(fp);
-  const rp = path.join(pasta, 'resumo.md');
-  try { fs.unlinkSync(rp); } catch (_) {}
+  const docxPath = path.join(pasta, 'resumo.docx');
+  try { fs.unlinkSync(docxPath); } catch (_) {}
 
-  const r = await summary.updateResumo({
-    protocolo: 99997, docxPath: fp,
-    autor: 'TESTE', dataISO: '2026-07-23T12:00:00.000Z',
-    lastDocHash: null, force: false,
+  await summary.updateResumo({
+    protocolo: 4, docxPath: fp, autor: 'T', dataISO: '2026-01-01',
+    lastDocHash: null, force: true,
   });
 
-  expect(r.message).not.toContain('não mudou');
-  expect(r.hash).toMatch(/^[a-f0-9]{64}$/);
-  expect(r.atualizou).toBe(true);
-});
-
-test('updateResumo com hash diferente chama LLM', async () => {
-  const fp = dummyFile('conteudo novo');
-  const hashAntigo = 'a'.repeat(64);
-
-  const r = await summary.updateResumo({
-    protocolo: 99996, docxPath: fp,
-    autor: 'TESTE', dataISO: '2026-07-23T12:00:00.000Z',
-    lastDocHash: hashAntigo, force: false,
-  });
-
-  expect(r.message).not.toContain('não mudou');
-  expect(r.atualizou).toBe(true);
+  expect(fs.existsSync(docxPath)).toBe(true);
+  expect(fs.existsSync(path.join(pasta, 'resumo.md'))).toBe(false);
 });

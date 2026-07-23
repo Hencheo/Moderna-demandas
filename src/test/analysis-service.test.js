@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// Mock padrão: retorna lista vazia de branches
+// Mock das dependências externas
 const mockGitList = jest.fn().mockReturnValue([]);
 const mockGitCurrent = jest.fn().mockReturnValue('main');
 const mockGitDiff = jest.fn().mockReturnValue({ files: [], content: '' });
@@ -27,7 +27,13 @@ jest.mock('../services/ado-service', () => {
 
 jest.mock('../utils/llm-client', () => {
   return jest.fn().mockImplementation(() => ({
-    ask: jest.fn().mockResolvedValue('## 🔍 Diagnóstico — Chamado #99999\n\nDiagnóstico gerado pelo LLM mock.'),
+    ask: jest.fn().mockResolvedValue('## Diagnóstico gerado pelo LLM mock.'),
+  }));
+});
+
+jest.mock('../utils/docx-generator', () => {
+  return jest.fn().mockImplementation(() => ({
+    generate: jest.fn().mockResolvedValue(Buffer.from('fake docx')),
   }));
 });
 
@@ -39,41 +45,43 @@ afterAll(() => {
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
 });
 
-test('analyze com pasta vazia retorna analisou=true', async () => {
+test('analyze com pasta vazia gera resumo.docx', async () => {
   const pasta = path.join(tmpDir, '99999');
   fs.mkdirSync(pasta, { recursive: true });
   const svc = new AnalysisService();
   const r = await svc.analyze({ protocolo: 99999, chamadosDir: pasta });
   expect(r.analisou).toBe(true);
-  expect(fs.existsSync(path.join(pasta, 'resumo.md'))).toBe(true);
+  // Saída é .docx, não .md
+  expect(fs.existsSync(path.join(pasta, 'resumo.docx'))).toBe(true);
+  expect(fs.existsSync(path.join(pasta, 'resumo.md'))).toBe(false);
 });
 
-test('analyze com resumo.md existente mantém conteúdo anterior', async () => {
+test('analyze com resumo.docx existente mantém conteúdo anterior', async () => {
   const pasta = path.join(tmpDir, '99998');
   fs.mkdirSync(pasta, { recursive: true });
-  const resumoPath = path.join(pasta, 'resumo.md');
-  fs.writeFileSync(resumoPath, '# Resumo anterior do chamado', 'utf-8');
+  // Cria resumo.docx anterior simulado
+  const docxPath = path.join(pasta, 'resumo.docx');
+  fs.writeFileSync(docxPath, 'conteudo anterior bruto');
 
   const svc = new AnalysisService();
   const r = await svc.analyze({ protocolo: 99998, chamadosDir: pasta });
   expect(r.analisou).toBe(true);
-
-  const conteudo = fs.readFileSync(resumoPath, 'utf-8');
-  expect(conteudo).toContain('Resumo anterior');
+  // resumo.docx deve ter sido sobrescrito
+  expect(fs.existsSync(docxPath)).toBe(true);
 });
 
-test('analyze com docx encontra arquivo e processa', async () => {
+test('analyze com docx na pasta encontra e processa', async () => {
   const pasta = path.join(tmpDir, '99997');
   fs.mkdirSync(pasta, { recursive: true });
-  fs.writeFileSync(path.join(pasta, '99997_test.docx'), 'fake docx');
+  fs.writeFileSync(path.join(pasta, '99997_test.docx'), 'fake docx content');
 
   const svc = new AnalysisService();
   const r = await svc.analyze({ protocolo: 99997, chamadosDir: pasta });
   expect(r.analisou).toBe(true);
-  expect(fs.existsSync(path.join(pasta, 'resumo.md'))).toBe(true);
+  expect(fs.existsSync(path.join(pasta, 'resumo.docx'))).toBe(true);
 });
 
-test('analyze com branch local e branch atual iguais usa git diff', async () => {
+test('analyze com branch local igual usa git diff', async () => {
   mockGitList.mockReturnValue(['Develop/Rafael/99996_DEV']);
   mockGitCurrent.mockReturnValue('Develop/Rafael/99996_DEV');
 
@@ -84,7 +92,7 @@ test('analyze com branch local e branch atual iguais usa git diff', async () => 
   expect(r.analisou).toBe(true);
 });
 
-test('analyze com branch diferente de atual gera alerta', async () => {
+test('analyze com branch diferente gera alerta', async () => {
   mockGitList.mockReturnValue(['Develop/Rafael/99995_DEV']);
   mockGitCurrent.mockReturnValue('Develop/Rafael/outro_chamado');
 

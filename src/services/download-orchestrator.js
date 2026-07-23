@@ -104,6 +104,13 @@ class DownloadOrchestrator {
         log(`#${protocolo}`, `ERRO na análise: ${analysisErr.message} (download mantido)`);
       }
 
+      // Limpa arquivos .docx antigos (mantém só o mais recente)
+      try {
+        this._cleanupOldDocs(path.dirname(destPath), path.basename(destPath));
+      } catch (cleanErr) {
+        log(`#${protocolo}`, `ERRO na limpeza: ${cleanErr.message}`);
+      }
+
       const stat = this._fileRepo.stat(destPath);
       log(`#${protocolo}`, `DOWNLOAD OK — ${stat ? (stat.size / 1024).toFixed(1) : '?'} KB`);
     } catch (err) {
@@ -203,6 +210,24 @@ class DownloadOrchestrator {
     const pasta = this._organizer.getDestPath({ protocolo, fileName: '' });
     const pastaDir = path.dirname(pasta);
     return await this._analysis.analyze({ protocolo, chamadosDir: pastaDir });
+  }
+
+  /**
+   * Remove .docx antigos na pasta, mantendo apenas o atual.
+   */
+  _cleanupOldDocs(pasta, manterArquivo) {
+    if (!this._fileRepo.exists(pasta)) return;
+    const arquivos = this._fileRepo.readdir(pasta);
+    const docxAntigos = arquivos.filter(
+      f => f.endsWith('.docx') && f !== manterArquivo && f !== 'resumo.docx'
+    );
+    for (const f of docxAntigos) {
+      const fullPath = path.join(pasta, f);
+      try {
+        require('fs').unlinkSync(fullPath);
+        log('cleanup', `removido: ${f}`);
+      } catch (_) {}
+    }
   }
 }
 
