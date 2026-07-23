@@ -45,6 +45,15 @@ const config = {
     minHeight: 600,
     title: 'SISCON Monitor',
   },
+
+  // Caminhos
+  paths: {
+    downloadTemp: path.join(__dirname, '..', '..', 'tmp'),
+    chamadosDir: path.join(
+      process.env.USERPROFILE || process.env.HOME || 'C:/Users/rafael.coelho',
+      'Desktop', 'Chamados'
+    ),
+  },
 };
 
 module.exports = config;

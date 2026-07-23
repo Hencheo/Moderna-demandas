@@ -49,6 +49,12 @@ class IpcHandlers {
       this._stopPoll();
       return true;
     });
+
+    ipcMain.handle('download-latest', async (_event, protocolo) => {
+      const DownloadOrchestrator = require('../services/download-orchestrator');
+      const orchestrator = new DownloadOrchestrator();
+      return orchestrator.execute(protocolo);
+    });
   }
 
   async _executePoll() {

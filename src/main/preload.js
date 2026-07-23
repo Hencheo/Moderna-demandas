@@ -29,4 +29,7 @@ contextBridge.exposeInMainWorld('siscon', {
   onStartAutomatic: (callback) => {
     ipcRenderer.on('start-automatic', () => callback());
   },
+
+  /** Baixa o anexo mais recente de um protocolo */
+  downloadLatest: (protocolo) => ipcRenderer.invoke('download-latest', protocolo),
 });

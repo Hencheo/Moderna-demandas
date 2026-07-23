@@ -26,7 +26,7 @@ Cada camada tem **uma única responsabilidade** e nunca invade a camada vizinha.
 │   (Acesso a dados — isola persistência)               │
 ├─────────────────────────────────────────────────────┤
 │                    src/models/                         │
-│   solicitacao.js                                     │
+│   solicitacao.js · anexo.js                          │
 │   (Entidades de domínio — dados + validação)          │
 ├─────────────────────────────────────────────────────┤
 │                    src/renderer/                       │
@@ -70,7 +70,10 @@ ipcMain.handle('poll-now', async () => {
 | Serviço | Responsabilidade | Dependências |
 |---|---|---|
 | `auth-service.js` | Login no SISCON (ASP.NET Forms Auth) | `HttpClient`, `config` |
-| `scraper-service.js` | Parse do HTML, extração de dados | `HttpClient` (autenticado), `Solicitacao` |
+| `ScraperService` | Parse do HTML da grid de listagem (Consultar.aspx) | `HttpClient` (autenticado), `Solicitacao` |
+| `AnexoBrowserService` | Extração de anexos via Puppeteer (grid ASP.NET AJAX) | Puppeteer, `Anexo` |
+| `FileOrganizerService` | Organização de arquivos baixados em pastas | `Anexo`, `config` |
+| `DownloadOrchestrator` | Orquestra: busca anexo mais recente → baixa → salva | `AnexoBrowserService`, `FileOrganizerService` |
 | `diff-service.js` | Comparação entre estados | `Solicitacao`, `DiffResult` |
 
 **Regras:**
@@ -115,6 +118,50 @@ ipcMain.handle('poll-now', async () => {
 - Carrega `.env` automaticamente
 - Contém URLs, intervalos, constantes
 - Nenhuma camada hardcoda URL ou credencial
+
+---
+
+## 3. Download de Anexos (caso especial)
+
+O grid de anexos (Anexos > Arquivos) **não** está disponível no HTML inicial.  
+Ele carrega via **ASP.NET AJAX UpdatePanel** — o conteúdo só aparece após JavaScript executar.
+
+### Solução: Puppeteer (headless Chrome)
+
+Usamos `puppeteer-core` (aproveita o Chrome já instalado, sem baixar Chromium):
+
+```
+AnexoBrowserService
+  └── Puppeteer (headless)
+        ├── Login (preenche form, clica Acessar)
+        ├── Navega para Solicitacao.aspx?key=N
+        ├── Clica aba Anexos → aguarda UpdatePanel
+        └── Extrai dados do grid renderizado
+              └── downloadUrl = /DownloadFile.ashx?prms=<hash>
+```
+
+### Download URL pattern
+
+O download real usa o handler:
+```
+https://siscon.benner.com.br/DownloadFile.ashx?prms=<base64>
+```
+
+Requer cookies de sessão (`WesAuth_SISCON`). O `AnexoBrowserService` usa
+o `HttpClient` autenticado para fazer o download via stream.
+
+### Organização em pastas
+
+```
+~/Desktop/Chamados/
+  └── 2580974/
+      └── 2580974+_Erro_fech_conta_obs_Silicone_Retorno_QA_2307.docx
+```
+
+O `FileOrganizerService` decide:
+1. Qual anexo é o mais recente (por `incluidoEm`)
+2. Se já existe localmente, compara data vs mtime
+3. Só baixa se o servidor tiver versão mais nova
 
 ---
 
