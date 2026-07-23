@@ -1,0 +1,4 @@
+node_modules/
+.env
+siscon_state.json
+*.html

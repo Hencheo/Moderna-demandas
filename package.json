@@ -1,0 +1,13 @@
+{
+  "name": "siscon-monitor",
+  "version": "1.0.0",
+  "description": "Monitor visual do SISCON - Acompanha solicitações em tempo real",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node engine.js"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}
