@@ -2,12 +2,17 @@
   "name": "siscon-monitor",
   "version": "1.0.0",
   "description": "Monitor visual do SISCON - Acompanha solicitações em tempo real",
-  "main": "main.js",
+  "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node engine.js"
+    "test": "node src/index.js",
+    "test:watch": "jest --watch",
+    "jest": "jest"
   },
   "dependencies": {
     "electron": "^33.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
   }
 }
