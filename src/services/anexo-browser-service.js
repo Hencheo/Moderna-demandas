@@ -18,6 +18,7 @@ class AnexoBrowserService {
   constructor() {
     this._browser = null;
     this._page = null;
+    this._loggedIn = false;
   }
 
   async _ensureBrowser() {
@@ -42,15 +43,19 @@ class AnexoBrowserService {
   }
 
   async _login() {
+    if (this._loggedIn) return; // Já logado, não navega
+
     const page = await this._ensurePage();
-    // Verifica se já está logado tentando acessar uma página autenticada
-    const checkResp = await page.goto(
+
+    // Tenta acessar página autenticada para verificar sessão
+    const resp = await page.goto(
       `${config.siscon.baseUrl}/siscon/e/Solicitacoes/Consultar.aspx`,
       { waitUntil: 'domcontentloaded', timeout: 10000 }
     );
-    const checkText = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '');
-    if (checkText.includes('SMSs') || checkText.includes('Protocolo')) {
-      return; // Já logado
+    const text = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '');
+    if (text.includes('SMSs') || text.includes('Protocolo')) {
+      this._loggedIn = true;
+      return;
     }
 
     // Login completo
@@ -61,6 +66,7 @@ class AnexoBrowserService {
     await page.type('input[name="wesLogin$loginWes$Password"]', config.siscon.pass);
     await page.click('#LoginButton');
     await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
+    this._loggedIn = true;
   }
 
   /**
