@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SISCON Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>📋 SISCON Monitor</h1>
+      <span class="badge" id="status-badge">⏸️ Parado</span>
+    </div>
+    <div class="header-right">
+      <span id="timer-display">--:--</span>
+      <span id="count-display">0 solicitações</span>
+      <button id="btn-poll" class="btn" title="Buscar agora">🔄</button>
+      <button id="btn-toggle" class="btn btn-primary">▶️ Iniciar</button>
+      <button id="btn-clear" class="btn btn-secondary">🧹 Limpar</button>
+    </div>
+  </header>
+
+  <div id="notification-area" class="notification-area"></div>
+
+  <div id="empty-state">
+    <div class="empty-icon">📭</div>
+    <h2>Nenhuma solicitação encontrada</h2>
+    <p>Clique em "▶️ Iniciar" para começar o monitoramento</p>
+  </div>
+
+  <div id="table-container" style="display:none;">
+    <div class="table-filters">
+      <input type="text" id="filter-input" placeholder="🔍 Filtrar por protocolo, cliente, resumo..." />
+      <select id="filter-situacao">
+        <option value="">Todas as situações</option>
+      </select>
+    </div>
+
+    <div id="diff-summary" class="diff-summary"></div>
+
+    <div class="table-wrapper">
+      <table id="solicitacoes-table">
+        <thead>
+          <tr>
+            <th class="col-protocolo">#</th>
+            <th class="col-classificacao">Classificação</th>
+            <th class="col-cliente">Cliente</th>
+            <th class="col-sistema">Sistema</th>
+            <th class="col-resumo">Resumo</th>
+            <th class="col-situacao">Situação</th>
+            <th class="col-acoes"></th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="log-area">
+    <h3>📜 Histórico</h3>
+    <div id="log-list"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

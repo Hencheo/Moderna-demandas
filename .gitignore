@@ -1,4 +1,6 @@
 node_modules/
 .env
 siscon_state.json
-*.html
+/consultar.html
+/listagem.html
+/solicitacao_*.html
