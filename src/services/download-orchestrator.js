@@ -12,10 +12,12 @@
  * I/O de arquivo: DELEGA ao FileRepository.
  */
 const config = require('../config');
+const path = require('path');
 const AnexoBrowserService = require('./anexo-browser-service');
 const FileOrganizerService = require('./file-organizer-service');
 const FileRepository = require('../repositories/file-repository');
 const SummaryService = require('./summary-service');
+const AnalysisService = require('./analysis-service');
 
 const log = (ctx, msg) =>
   console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Download] ${ctx} → ${msg}`);
@@ -26,6 +28,7 @@ class DownloadOrchestrator {
     this._organizer = new FileOrganizerService();
     this._fileRepo = new FileRepository();
     this._summary = new SummaryService();
+    this._analysis = new AnalysisService();
     this._currentUser = (config.siscon.user || '').toUpperCase();
     log('init', `usuário atual = ${this._currentUser}`);
   }
@@ -89,6 +92,16 @@ class DownloadOrchestrator {
         latest._docHash = resumo.hash;
       } catch (summaryErr) {
         log(`#${protocolo}`, `ERRO no resumo: ${summaryErr.message} (download mantido)`);
+      }
+
+      // Análise do chamado via ADO + LLM
+      try {
+        await this._analysis.analyze({
+          protocolo,
+          docxPath: destPath,
+        });
+      } catch (analysisErr) {
+        log(`#${protocolo}`, `ERRO na análise: ${analysisErr.message} (download mantido)`);
       }
 
       const stat = this._fileRepo.stat(destPath);
@@ -181,6 +194,15 @@ class DownloadOrchestrator {
       dataISO: latest.timestamp,
       force: true,
     });
+  }
+
+  /**
+   * Força análise completa do chamado (gatilho manual).
+   */
+  async forceAnalyze(protocolo) {
+    const pasta = this._organizer.getDestPath({ protocolo, fileName: '' });
+    const pastaDir = path.dirname(pasta);
+    return await this._analysis.analyze({ protocolo, chamadosDir: pastaDir });
   }
 }
 

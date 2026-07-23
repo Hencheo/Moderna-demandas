@@ -35,4 +35,7 @@ contextBridge.exposeInMainWorld('siscon', {
 
   /** Força geração/atualização do resumo.md */
   generateResumo: (protocolo) => ipcRenderer.invoke('generate-resumo', protocolo),
+
+  /** Força análise completa do chamado (ADO + diff + LLM) */
+  analyzeChamado: (protocolo) => ipcRenderer.invoke('analyze-chamado', protocolo),
 });

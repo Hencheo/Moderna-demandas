@@ -53,6 +53,7 @@ const config = {
       process.env.USERPROFILE || process.env.HOME || 'C:/Users/rafael.coelho',
       'Desktop', 'Chamados'
     ),
+    modernaRepo: 'C:/Users/rafael.coelho/Moderna.Net',
   },
 
   // LLM (Nous Research / OpenAI-compatible)
@@ -61,6 +62,13 @@ const config = {
     apiKey: process.env.NOUS_API_KEY || process.env.LLM_API_KEY || '',
     model: process.env.LLM_MODEL || 'deepseek/deepseek-v4-flash',
     maxTokens: parseInt(process.env.LLM_MAX_TOKENS || '4096', 10),
+  },
+
+  // Azure DevOps
+  ado: {
+    org: process.env.ADO_ORG || 'modernasistemas',
+    project: process.env.ADO_PROJECT || 'Moderna.Net',
+    repo: process.env.ADO_REPO || 'Moderna.Net',
   },
 };
 

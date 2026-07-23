@@ -152,7 +152,7 @@
         <td class="col-sistema">${escapeHtml(s.sistema)}</td>
         <td class="col-resumo" title="${escapeHtml(s.resumo)}">${escapeHtml(s.resumo)}</td>
         <td class="col-situacao"><span class="status-badge ${situacaoClass(s.situacao)}">${escapeHtml(s.situacao)}</span></td>
-        <td class="col-acoes"><a href="${escapeHtml(s.url)}" target="_blank" title="Abrir no SISCON">🔗</a> <button class="btn-resumo" data-proto="${s.protocolo}" title="Gerar resumo">📝</button></td>
+        <td class="col-acoes"><a href="${escapeHtml(s.url)}" target="_blank" title="Abrir no SISCON">🔗</a> <button class="btn-resumo" data-proto="${s.protocolo}" title="Gerar resumo">📝</button> <button class="btn-analyze" data-proto="${s.protocolo}" title="Analisar chamado (ADO + diff)">🔍</button></td>
       `;
       tableBody.appendChild(tr);
     }
@@ -304,6 +304,26 @@
     }
     btn.disabled = false;
     btn.textContent = '📝';
+  });
+
+  // Event listener para botão de análise (🔍)
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-analyze');
+    if (!btn) return;
+    const proto = parseInt(btn.dataset.proto);
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    try {
+      const result = await window.siscon.analyzeChamado(proto);
+      const msgs = [result.message];
+      if (result.alerts?.length) msgs.push(...result.alerts);
+      showNotification(result.analisou ? 'new' : 'changed', `#${proto}: ${msgs[0]}`);
+      addLog('new', `🔍 #${proto} → ${msgs.join(' | ')}`);
+    } catch (err) {
+      showNotification('error', `#${proto}: ${err.message}`);
+    }
+    btn.disabled = false;
+    btn.textContent = '🔍';
   });
 
   addLog('', '🚀 SISCON Monitor carregado');

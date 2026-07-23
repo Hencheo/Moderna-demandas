@@ -48,6 +48,9 @@ class IpcHandlers {
     ipcMain.handle('generate-resumo', async (_event, protocolo) => {
       return this._getOrchestrator().forceResumo(protocolo);
     });
+    ipcMain.handle('analyze-chamado', async (_event, protocolo) => {
+      return this._getOrchestrator().forceAnalyze(protocolo);
+    });
   }
 
   async _executePoll() {
