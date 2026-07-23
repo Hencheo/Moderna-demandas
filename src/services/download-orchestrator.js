@@ -9,6 +9,7 @@
  *   não baixa (você já tem o arquivo)
  */
 const config = require('../config');
+const fs = require('fs');
 const AnexoBrowserService = require('./anexo-browser-service');
 const FileOrganizerService = require('./file-organizer-service');
 
@@ -33,14 +34,21 @@ class DownloadOrchestrator {
       return { baixou: false, message: `Sem anexos para #${protocolo}` };
     }
 
-    // 1. Se o timestamp não mudou, pula
+    // 1. Se o timestamp não mudou, verifica se o arquivo ainda existe no disco
     if (lastTimestampISO && latest.timestamp <= lastTimestampISO) {
-      return {
-        baixou: false,
-        message: `Anexo já verificado: ${latest.nome}`,
-        timestamp: latest.timestamp,
-        nome: latest.nome,
-      };
+      const destPath = this._organizer.getDestPath({
+        protocolo,
+        fileName: latest.nome,
+      });
+      if (fs.existsSync(destPath)) {
+        return {
+          baixou: false,
+          message: `Anexo já verificado: ${latest.nome}`,
+          timestamp: latest.timestamp,
+          nome: latest.nome,
+        };
+      }
+      // Arquivo foi deletado do disco — continua para baixar de novo
     }
 
     // 2. Se o último anexo é do próprio usuário, não baixa
