@@ -74,7 +74,7 @@ class AnexoBrowserService {
    * Mais rápido que fetchAnexos() porque não extrai dados completos.
    *
    * @param {number} protocolo
-   * @returns {Promise<{timestamp: string, nome: string, downloadUrl: string}|null>}
+   * @returns {Promise<{timestamp: string, nome: string, downloadUrl: string, incluidoPor: string}|null>}
    */
   async getLatestTimestamp(protocolo) {
     const page = await this._ensurePage();
@@ -97,15 +97,20 @@ class AnexoBrowserService {
         const tbody = document.querySelector(
           '#ctl00_Main_ucSolicitacao_WIDGETID_ANEXOS_SimpleGrid tbody'
         );
-        if (!tbody || !tbody.querySelector('tr')) return null;
+        if (!tbody) return null;
 
-        const firstRow = tbody.querySelector('tr');
+        // Pega a primeira linha com dados (rel attribute = linha real)
+        const rows = tbody.querySelectorAll('tr[rel]');
+        if (rows.length === 0) return null;
+        const firstRow = rows[0];
+
         const link = firstRow.querySelector('td[data-field="ARQUIVO"] a');
         if (!link) return null;
 
         return {
           nome: link.textContent.trim(),
           downloadUrl: link.getAttribute('href'),
+          incluidoPor: firstRow.querySelector('td[data-field="INCLUIDOPOR"]')?.textContent?.trim() || '',
           incluidoEm: firstRow.querySelector('td[data-field="INCLUSAO"]')?.textContent?.trim() || '',
         };
       });
@@ -118,6 +123,7 @@ class AnexoBrowserService {
         downloadUrl: result.downloadUrl.startsWith('http')
           ? result.downloadUrl
           : `${config.siscon.baseUrl}${result.downloadUrl}`,
+        incluidoPor: result.incluidoPor,
       };
     } catch (err) {
       console.error(`getLatestTimestamp(${protocolo}):`, err.message);

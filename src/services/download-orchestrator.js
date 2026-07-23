@@ -3,9 +3,12 @@
  * Orquestrador: dado um protocolo, baixa o anexo mais recente
  * e organiza em ~/Desktop/Chamados/{protocolo}/.
  *
- * Agora com verificação inteligente: compara timestamp do servidor
- * com o último timestamp conhecido para evitar downloads desnecessários.
+ * Regras:
+ * - Timestamp: só baixa se o servidor tiver anexo mais novo
+ * - Autor: se o último anexo for do próprio usuário (RAFAEL.COELHO),
+ *   não baixa (você já tem o arquivo)
  */
+const config = require('../config');
 const AnexoBrowserService = require('./anexo-browser-service');
 const FileOrganizerService = require('./file-organizer-service');
 
@@ -13,33 +16,46 @@ class DownloadOrchestrator {
   constructor() {
     this._anexoService = new AnexoBrowserService();
     this._organizer = new FileOrganizerService();
+    // Nome do usuário no SISCON (vem em MAIÚSCULO na grid)
+    this._currentUser = (config.siscon.user || '').toUpperCase();
   }
 
   /**
    * Verifica se há anexo novo e baixa se necessário.
    *
    * @param {number} protocolo
-   * @param {string|null} lastTimestampISO - Último timestamp conhecido (do state)
+   * @param {string|null} lastTimestampISO
    * @returns {Promise<{baixou: boolean, message: string, timestamp?: string, nome?: string, destPath?: string}>}
    */
   async checkAndDownload(protocolo, lastTimestampISO) {
-    // 1. Busca APENAS o timestamp do anexo mais recente (leve)
     const latest = await this._anexoService.getLatestTimestamp(protocolo);
     if (!latest) {
       return { baixou: false, message: `Sem anexos para #${protocolo}` };
     }
 
-    // 2. Compara timestamps
+    // 1. Se o timestamp não mudou, pula
     if (lastTimestampISO && latest.timestamp <= lastTimestampISO) {
       return {
         baixou: false,
-        message: `Anexo já atualizado: ${latest.nome}`,
+        message: `Anexo já verificado: ${latest.nome}`,
         timestamp: latest.timestamp,
         nome: latest.nome,
       };
     }
 
-    // 3. Novidade! Baixa e organiza
+    // 2. Se o último anexo é do próprio usuário, não baixa
+    const autor = (latest.incluidoPor || '').toUpperCase().trim();
+    if (autor === this._currentUser) {
+      return {
+        baixou: false,
+        message: `Anexo de ${autor} — próprio usuário, download ignorado`,
+        timestamp: latest.timestamp,
+        nome: latest.nome,
+        incluidoPor: latest.incluidoPor,
+      };
+    }
+
+    // 3. Novidade de outro usuário! Baixa e organiza
     const destPath = this._organizer.getDestPath({
       protocolo,
       fileName: latest.nome,
@@ -49,19 +65,27 @@ class DownloadOrchestrator {
 
     return {
       baixou: true,
-      message: `📎 ${latest.nome}`,
+      message: `📎 ${latest.nome} (de ${latest.incluidoPor})`,
       timestamp: latest.timestamp,
       nome: latest.nome,
+      incluidoPor: latest.incluidoPor,
       destPath,
     };
   }
 
-  /**
-   * Executa o fluxo completo (ignora timestamp, força download).
-   * Útil para primeira execução ou força manual.
-   */
+  /** Força download (ignora timestamp e autor) */
   async execute(protocolo) {
-    return this.checkAndDownload(protocolo, null);
+    const latest = await this._anexoService.getLatestTimestamp(protocolo);
+    if (!latest) {
+      return { baixou: false, message: `Sem anexos para #${protocolo}` };
+    }
+    const destPath = this._organizer.getDestPath({ protocolo, fileName: latest.nome });
+    this._organizer.ensureDir(destPath);
+    await this._anexoService.downloadFile(latest.downloadUrl, destPath);
+    return {
+      baixou: true, message: `📎 ${latest.nome}`,
+      timestamp: latest.timestamp, nome: latest.nome, destPath,
+    };
   }
 
   async close() {
