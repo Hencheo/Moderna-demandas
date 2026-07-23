@@ -152,7 +152,7 @@
         <td class="col-sistema">${escapeHtml(s.sistema)}</td>
         <td class="col-resumo" title="${escapeHtml(s.resumo)}">${escapeHtml(s.resumo)}</td>
         <td class="col-situacao"><span class="status-badge ${situacaoClass(s.situacao)}">${escapeHtml(s.situacao)}</span></td>
-        <td class="col-acoes"><a href="${escapeHtml(s.url)}" target="_blank" title="Abrir no SISCON">🔗</a></td>
+        <td class="col-acoes"><a href="${escapeHtml(s.url)}" target="_blank" title="Abrir no SISCON">🔗</a> <button class="btn-resumo" data-proto="${s.protocolo}" title="Gerar resumo">📝</button></td>
       `;
       tableBody.appendChild(tr);
     }
@@ -286,6 +286,24 @@
   window.siscon.onStartAutomatic(() => {
     // Auto-start on first load
     toggleRunning();
+  });
+
+  // Event listener para botão de resumo (delegação)
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-resumo');
+    if (!btn) return;
+    const proto = parseInt(btn.dataset.proto);
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    try {
+      const result = await window.siscon.generateResumo(proto);
+      showNotification(result.atualizou ? 'new' : 'changed', `#${proto}: ${result.message}`);
+      addLog(result.atualizou ? 'new' : 'changed', `📝 #${proto} → ${result.message}`);
+    } catch (err) {
+      showNotification('error', `#${proto}: ${err.message}`);
+    }
+    btn.disabled = false;
+    btn.textContent = '📝';
   });
 
   addLog('', '🚀 SISCON Monitor carregado');

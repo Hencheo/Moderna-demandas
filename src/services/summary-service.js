@@ -2,12 +2,12 @@
  * src/services/summary-service.js
  * Serviço de sumarização de documentos de chamado.
  *
- * Responsabilidade: dado um .docx baixado, extrai o texto, chama o LLM
- * para comparar com o resumo anterior (se existir) e atualiza o
- * resumo.md na pasta do chamado — sem duplicar mensagens.
+ * Critério inteligente: SHA256 do .docx. Se o hash bater com o último
+ * processado, LLM NÃO é chamado (zero tokens desperdiçados).
  *
- * Depende de: LlmClient (transporte), FileRepository (I/O).
+ * Gatilho manual: force=true ignora o hash e sempre chama o LLM.
  */
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const mammoth = require('mammoth');
@@ -22,7 +22,17 @@ class SummaryService {
   }
 
   /**
-   * Extrai o texto puro de um arquivo .docx.
+   * Computa SHA256 de um arquivo.
+   * @param {string} filePath
+   * @returns {string}
+   */
+  computeHash(filePath) {
+    const buffer = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
+  /**
+   * Extrai texto puro de .docx.
    * @param {string} filePath
    * @returns {Promise<string>}
    */
@@ -30,12 +40,8 @@ class SummaryService {
     log('extract', `lendo ${path.basename(filePath)}...`);
     const buffer = fs.readFileSync(filePath);
     const result = await mammoth.extractRawText({ buffer });
-    const text = result.value;
-    log('extract', `${text.length} caracteres extraídos`);
-    if (result.messages.length > 0) {
-      log('extract', `warnings: ${result.messages.length}`);
-    }
-    return text;
+    log('extract', `${result.value.length} caracteres`);
+    return result.value;
   }
 
   /**
@@ -43,75 +49,83 @@ class SummaryService {
    *
    * @param {Object} params
    * @param {number} params.protocolo
-   * @param {string} params.docxPath - Caminho do .docx baixado
-   * @param {string} params.autor - Quem postou o anexo
-   * @param {string} params.dataISO - Data de postagem (ISO)
+   * @param {string} params.docxPath
+   * @param {string} params.autor
+   * @param {string} params.dataISO
+   * @param {string|null} params.lastDocHash - Hash do último doc processado (do state)
+   * @param {boolean} [params.force] - true = ignora hash, sempre chama LLM
+   * @returns {Promise<{atualizou: boolean, hash: string, message: string}>}
    */
-  async updateResumo({ protocolo, docxPath, autor, dataISO }) {
+  async updateResumo({ protocolo, docxPath, autor, dataISO, lastDocHash, force }) {
+    // 1. Hash do documento atual
+    const docHash = this.computeHash(docxPath);
+    log(`#${protocolo}`, `hash=${docHash.slice(0, 16)}...`);
+
+    // 2. Se não for força e hash bater com o último → skip
+    if (!force && lastDocHash && docHash === lastDocHash) {
+      log(`#${protocolo}`, `hash igual ao último processado — SKIP (sem LLM)`);
+      return { atualizou: false, hash: docHash, message: 'Documento não mudou desde o último resumo' };
+    }
+
+    // 3. Lê resumo anterior
     const pasta = path.dirname(docxPath);
     const resumoPath = path.join(pasta, 'resumo.md');
-
-    // 1. Lê resumo anterior (se existir)
     let resumoAnterior = '';
     if (fs.existsSync(resumoPath)) {
       resumoAnterior = fs.readFileSync(resumoPath, 'utf-8');
-      log('update', `resumo.md existente (${resumoAnterior.length} chars)`);
+      log(`#${protocolo}`, `resumo.md existente (${resumoAnterior.length} chars)`);
     } else {
-      log('update', 'resumo.md não existe — será criado');
+      log(`#${protocolo}`, 'resumo.md não existe — criando');
     }
 
-    // 2. Extrai texto do .docx novo
+    // 4. Extrai texto
     const textoNovo = await this.extractText(docxPath);
     if (!textoNovo.trim()) {
-      log('update', 'documento vazio — pulando LLM');
-      return false;
+      log(`#${protocolo}`, 'documento vazio — pulando LLM');
+      return { atualizou: false, hash: docHash, message: 'Documento vazio' };
     }
 
-    // 3. Prepara prompt e chama LLM
+    // 5. Chama LLM
     const dataFormatada = new Date(dataISO).toLocaleString('pt-BR', {
       day: '2-digit', month: '2-digit', year: 'numeric',
       hour: '2-digit', minute: '2-digit',
     });
 
-    const system = `Você é um assistente que mantém um histórico de atualizações de chamados técnicos.
-Sua função é comparar o conteúdo de um novo documento com o resumo anterior (se houver)
-e produzir um resumo.md ATUALIZADO, seguindo estas regras:
+    const system = `Você é um assistente que mantém um histórico técnico.
+Compare o conteúdo do novo documento com o resumo anterior.
+Produza o resumo.md ATUALIZADO seguindo:
 
-1. Mantenha TODAS as entradas anteriores do histórico (nunca apague)
-2. Adicione APENAS a nova entrada do documento atual, extraindo as informações
-   que não estavam presentes no resumo anterior
-3. NUNCA duplique conteúdo — se algo já está no histórico, não repita
-4. Formato: markdown, cada entrada com data, autor e descrição concisa
-5. Se for o primeiro resumo (não há anterior), crie o arquivo completo`;
+1. Mantenha TODAS as entradas anteriores (nunca apague)
+2. Adicione APENAS a nova entrada, extraindo o que NÃO está no histórico
+3. NUNCA duplique conteúdo
+4. Formato: markdown, cada entrada com data, autor e descrição
+5. Se for o primeiro, crie o arquivo completo`;
 
-    const prompt = `## RESUMO ANTERIOR (resumo.md)
-${resumoAnterior || '(vazio — primeiro documento)'}
+    const prompt = `## RESUMO ANTERIOR
+${resumoAnterior || '(vazio)'}
 
 ## NOVO DOCUMENTO
 Data: ${dataFormatada}
 Autor: ${autor}
 Arquivo: ${path.basename(docxPath)}
 
-## CONTEÚDO DO NOVO DOCUMENTO
-${textoNovo.slice(0, 15000)}${textoNovo.length > 15000 ? '\n\n... (conteúdo truncado)' : ''}
+## CONTEÚDO
+${textoNovo.slice(0, 15000)}${textoNovo.length > 15000 ? '\n\n... (truncado)' : ''}
 
 ## INSTRUÇÃO
-Atualize o resumo.md com a nova entrada baseada no documento acima.
-NÃO duplique informações já presentes no resumo anterior.
-Retorne APENAS o conteúdo completo do resumo.md atualizado.`;
+Retorne APENAS o resumo.md completo atualizado.`;
 
-    log('update', `enviando para LLM (${textoNovo.length} chars no doc)...`);
-
+    log(`#${protocolo}`, `enviando para LLM (${textoNovo.length} chars)...`);
     const resultado = await this._llm.ask(system, prompt);
     if (!resultado) {
-      log('update', 'LLM retornou vazio — mantendo resumo anterior');
-      return false;
+      log(`#${protocolo}`, 'LLM retornou vazio');
+      return { atualizou: false, hash: docHash, message: 'LLM retornou vazio' };
     }
 
-    // 4. Salva resumo atualizado
+    // 6. Salva
     fs.writeFileSync(resumoPath, resultado, 'utf-8');
-    log('update', `resumo.md atualizado (${resultado.length} chars)`);
-    return true;
+    log(`#${protocolo}`, `resumo.md atualizado (${resultado.length} chars)`);
+    return { atualizou: true, hash: docHash, message: 'Resumo atualizado' };
   }
 }
 

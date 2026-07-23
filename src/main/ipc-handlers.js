@@ -45,6 +45,9 @@ class IpcHandlers {
     ipcMain.handle('download-latest', async (_event, protocolo) => {
       return this._getOrchestrator().execute(protocolo);
     });
+    ipcMain.handle('generate-resumo', async (_event, protocolo) => {
+      return this._getOrchestrator().forceResumo(protocolo);
+    });
   }
 
   async _executePoll() {
@@ -72,7 +75,7 @@ class IpcHandlers {
       const anexosState = { ...(prevState.anexos || {}) };
       for (const d of downloads) {
         if (d.timestamp) {
-          anexosState[String(d.protocolo)] = { lastTimestamp: d.timestamp, lastFileName: d.nome };
+          anexosState[String(d.protocolo)] = { lastTimestamp: d.timestamp, lastFileName: d.nome, ...(d.docHash ? { lastDocHash: d.docHash } : {}) };
         }
       }
       this._repo.save(current, anexosState);

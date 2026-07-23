@@ -32,4 +32,7 @@ contextBridge.exposeInMainWorld('siscon', {
 
   /** Baixa o anexo mais recente de um protocolo */
   downloadLatest: (protocolo) => ipcRenderer.invoke('download-latest', protocolo),
+
+  /** Força geração/atualização do resumo.md */
+  generateResumo: (protocolo) => ipcRenderer.invoke('generate-resumo', protocolo),
 });

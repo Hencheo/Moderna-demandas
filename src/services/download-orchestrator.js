@@ -33,7 +33,7 @@ class DownloadOrchestrator {
   /**
    * Verifica se há anexo novo e baixa se necessário.
    */
-  async checkAndDownload(protocolo, lastTimestampISO) {
+  async checkAndDownload(protocolo, lastTimestampISO, lastDocHash) {
     log(`#${protocolo}`, `iniciando (timestamp salvo = ${lastTimestampISO || 'nunca'})`);
 
     const latest = await this._anexoService.getLatestTimestamp(protocolo);
@@ -75,12 +75,18 @@ class DownloadOrchestrator {
 
       // Gera/atualiza resumo.md via LLM
       try {
-        await this._summary.updateResumo({
+        const resumo = await this._summary.updateResumo({
           protocolo,
           docxPath: destPath,
           autor: latest.incluidoPor,
           dataISO: latest.timestamp,
+          lastDocHash,
         });
+        if (resumo.atualizou) {
+          log(`#${protocolo}`, `resumo atualizado (hash=${resumo.hash.slice(0, 16)}...)`);
+        }
+        // Salva o hash para retornar ao state
+        latest._docHash = resumo.hash;
       } catch (summaryErr) {
         log(`#${protocolo}`, `ERRO no resumo: ${summaryErr.message} (download mantido)`);
       }
@@ -92,7 +98,7 @@ class DownloadOrchestrator {
       throw err;
     }
 
-    return { baixou: true, message: `📎 ${latest.nome} (de ${latest.incluidoPor})`, timestamp: latest.timestamp, nome: latest.nome, incluidoPor: latest.incluidoPor, destPath };
+    return { baixou: true, message: `📎 ${latest.nome} (de ${latest.incluidoPor})`, timestamp: latest.timestamp, nome: latest.nome, incluidoPor: latest.incluidoPor, destPath, docHash: latest._docHash };
   }
 
   /**
@@ -113,7 +119,7 @@ class DownloadOrchestrator {
         continue;
       }
 
-      const result = await this.checkAndDownload(proto, stored?.lastTimestamp || null);
+      const result = await this.checkAndDownload(proto, stored?.lastTimestamp || null, stored?.lastDocHash || null);
       if (result.baixou || (!stored && result.timestamp)) {
         result.protocolo = proto;
         results.push(result);
@@ -149,6 +155,32 @@ class DownloadOrchestrator {
 
   async close() {
     await this._anexoService.close();
+  }
+
+  /**
+   * Força regeração do resumo.md (gatilho manual).
+   * Reusa o browser do orchestrator — não abre Chrome novo.
+   */
+  async forceResumo(protocolo) {
+    const latest = await this._anexoService.getLatestTimestamp(protocolo);
+    if (!latest) return { atualizou: false, message: 'Sem anexos para este protocolo' };
+
+    const destPath = this._organizer.getDestPath({ protocolo, fileName: latest.nome });
+
+    // Se o arquivo não existe localmente, baixa primeiro
+    if (!this._fileRepo.exists(destPath)) {
+      log(`#${protocolo}`, 'arquivo não está em disco — baixando...');
+      const buffer = await this._anexoService.downloadFile(latest.downloadUrl);
+      this._fileRepo.writeFile(destPath, buffer);
+    }
+
+    return await this._summary.updateResumo({
+      protocolo,
+      docxPath: destPath,
+      autor: latest.incluidoPor,
+      dataISO: latest.timestamp,
+      force: true,
+    });
   }
 }
 
