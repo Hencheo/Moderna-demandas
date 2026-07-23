@@ -8,11 +8,13 @@
  * Download URL: /DownloadFile.ashx?prms=<base64>
  *
  * Performance: mantém browser persistente entre chamadas.
+ * I/O de arquivo: DELEGA ao FileRepository (não escreve em disco).
  */
-const path = require('path');
-const fs = require('fs');
 const config = require('../config');
 const Anexo = require('../models/anexo');
+
+const log = (ctx, msg) =>
+  console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Browser] ${ctx} → ${msg}`);
 
 class AnexoBrowserService {
   constructor() {
@@ -23,12 +25,14 @@ class AnexoBrowserService {
 
   async _ensureBrowser() {
     if (!this._browser) {
-      const puppeteer = require('puppeteer-core');
+      log('browser', 'lançando Chrome...');
+      const { default: puppeteer } = await import('puppeteer-core');
       this._browser = await puppeteer.launch({
         executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
       });
+      log('browser', 'Chrome iniciado');
     }
     return this._browser;
   }
@@ -43,63 +47,62 @@ class AnexoBrowserService {
   }
 
   async _login() {
-    if (this._loggedIn) return; // Já logado, não navega
-
+    if (this._loggedIn) {
+      log('login', 'já logado, skip');
+      return;
+    }
     const page = await this._ensurePage();
 
-    // Tenta acessar página autenticada para verificar sessão
-    const resp = await page.goto(
+    log('login', 'verificando sessão em Consultar.aspx...');
+    await page.goto(
       `${config.siscon.baseUrl}/siscon/e/Solicitacoes/Consultar.aspx`,
-      { waitUntil: 'domcontentloaded', timeout: 10000 }
+      { waitUntil: 'domcontentloaded', timeout: 30000 }
     );
     const text = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '');
     if (text.includes('SMSs') || text.includes('Protocolo')) {
       this._loggedIn = true;
+      log('login', 'sessão OK');
       return;
     }
 
-    // Login completo
+    log('login', 'sessão expirada, fazendo login completo...');
     await page.goto(`${config.siscon.baseUrl}${config.siscon.loginPath}`, {
       waitUntil: 'networkidle0',
     });
     await page.type('input[name="wesLogin$loginWes$UserName"]', config.siscon.user);
     await page.type('input[name="wesLogin$loginWes$Password"]', config.siscon.pass);
-    await page.click('#LoginButton');
-    await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
+
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 }),
+      page.click('#LoginButton'),
+    ]);
     this._loggedIn = true;
+    log('login', 'login concluído');
   }
 
-  /**
-   * Retorna APENAS o timestamp ISO do anexo mais recente de um protocolo.
-   * Mais rápido que fetchAnexos() porque não extrai dados completos.
-   *
-   * @param {number} protocolo
-   * @returns {Promise<{timestamp: string, nome: string, downloadUrl: string, incluidoPor: string}|null>}
-   */
   async getLatestTimestamp(protocolo) {
     const page = await this._ensurePage();
     await this._login();
 
     try {
-      // Navega para página da solicitação
       const solUrl = `${config.siscon.baseUrl}/siscon/e/solicitacoes/Solicitacao.aspx?key=${protocolo}&p=1`;
-      await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+      log(`#${protocolo}`, `navegando para ${solUrl}`);
+      await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 30000 });
 
-      // Clica aba Anexos para ativar o UpdatePanel
+      log(`#${protocolo}`, 'clicando aba Anexos...');
       await page.evaluate(() => {
         const tab = document.querySelector('a[data-widget-id="WIDGETID_ANEXOS"]');
         if (tab) tab.click();
       });
       await new Promise(r => setTimeout(r, 3000));
+      log(`#${protocolo}`, 'extraindo dados do grid...');
 
-      // Extrai APENAS o timestamp do primeiro anexo (mais recente por sort padrão)
       const result = await page.evaluate(() => {
         const tbody = document.querySelector(
           '#ctl00_Main_ucSolicitacao_WIDGETID_ANEXOS_SimpleGrid tbody'
         );
         if (!tbody) return null;
 
-        // Pega a primeira linha com dados (rel attribute = linha real)
         const rows = tbody.querySelectorAll('tr[rel]');
         if (rows.length === 0) return null;
         const firstRow = rows[0];
@@ -115,8 +118,12 @@ class AnexoBrowserService {
         };
       });
 
-      if (!result || !result.incluidoEm) return null;
+      if (!result || !result.incluidoEm) {
+        log(`#${protocolo}`, 'grid vazio ou sem dados');
+        return null;
+      }
 
+      log(`#${protocolo}`, `extraído: "${result.nome}" | ${result.incluidoEm} | por ${result.incluidoPor}`);
       return {
         timestamp: this._parseDate(result.incluidoEm).toISOString(),
         nome: result.nome,
@@ -126,23 +133,19 @@ class AnexoBrowserService {
         incluidoPor: result.incluidoPor,
       };
     } catch (err) {
-      console.error(`getLatestTimestamp(${protocolo}):`, err.message);
-      // Se falhou (sessão expirou?), tenta relogar na próxima
+      log(`#${protocolo}`, `ERRO: ${err.message}`);
       this._page = null;
       return null;
     }
   }
 
-  /**
-   * Extrai TODOS os anexos (para exibição detalhada).
-   */
   async fetchAnexos(protocolo) {
     const page = await this._ensurePage();
     await this._login();
-    const solUrl = `${config.siscon.baseUrl}/siscon/e/solicitacoes/Solicitacao.aspx?key=${protocolo}&p=1`;
 
     try {
-      await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+      const solUrl = `${config.siscon.baseUrl}/siscon/e/solicitacoes/Solicitacao.aspx?key=${protocolo}&p=1`;
+      await page.goto(solUrl, { waitUntil: 'networkidle0', timeout: 30000 });
       await page.evaluate(() => {
         const tab = document.querySelector('a[data-widget-id="WIDGETID_ANEXOS"]');
         if (tab) tab.click();
@@ -189,13 +192,18 @@ class AnexoBrowserService {
   }
 
   /**
-   * Faz o download de um arquivo usando HttpClient autenticado.
+   * Download de arquivo — retorna Buffer.
+   * Não escreve em disco (quem faz é o FileRepository).
+   *
+   * @param {string} url
+   * @returns {Promise<Buffer>}
    */
-  async downloadFile(url, destPath) {
+  async downloadFile(url) {
+    log('download', `iniciando download de ${url.substring(0, 80)}...`);
     const HttpClient = require('../utils/http-client');
     const http = new HttpClient();
 
-    // Re-autentica para ter cookies frescos
+    log('download', 'autenticando para download...');
     await http.postForm(config.siscon.loginPath, {
       __VIEWSTATE: (await (await http.get(config.siscon.loginPath)).text())
         .match(/__VIEWSTATE.*?value="([^"]*)"/)?.[1] || '',
@@ -209,13 +217,8 @@ class AnexoBrowserService {
 
     const resp = await http.request(url, { method: 'GET' });
     const buffer = Buffer.from(await resp.arrayBuffer());
-
-    const dir = path.dirname(destPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(destPath, buffer);
-    return destPath;
+    log('download', `OK — ${(buffer.length / 1024).toFixed(1)} KB`);
+    return buffer;
   }
 
   _parseDate(dateStr) {

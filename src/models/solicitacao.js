@@ -68,13 +68,13 @@ class Solicitacao {
  * Resultado da comparação entre dois estados.
  */
 class DiffResult {
-  constructor({ novas, removidas, alteradas, totalAnterior, totalAtual }) {
+  constructor({ novas, removidas, alteradas, totalAnterior, totalAtual, timestamp }) {
     this.novas = novas || [];
     this.removidas = removidas || [];
     this.alteradas = alteradas || [];
     this.totalAnterior = totalAnterior || 0;
     this.totalAtual = totalAtual || 0;
-    this.timestamp = new Date().toISOString();
+    this.timestamp = timestamp || new Date().toISOString();
   }
 }
 

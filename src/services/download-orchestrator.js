@@ -1,99 +1,127 @@
 /**
  * src/services/download-orchestrator.js
- * Orquestrador: dado um protocolo, baixa o anexo mais recente
- * e organiza em ~/Desktop/Chamados/{protocolo}/.
+ * Orquestrador de download de anexos.
  *
- * Regras:
- * - Timestamp: só baixa se o servidor tiver anexo mais novo
- * - Autor: se o último anexo for do próprio usuário (RAFAEL.COELHO),
- *   não baixa (você já tem o arquivo)
+ * Responsabilidade: coordenar a busca, decisão e download de anexos.
+ *
+ * Regras (aqui, no service):
+ * - Timestamp: só baixa se servidor tiver anexo mais novo
+ * - Arquivo em disco: se foi deletado, re-baixa
+ * - Autor: se último anexo for do próprio usuário, não baixa
+ *
+ * I/O de arquivo: DELEGA ao FileRepository.
  */
 const config = require('../config');
-const fs = require('fs');
 const AnexoBrowserService = require('./anexo-browser-service');
 const FileOrganizerService = require('./file-organizer-service');
+const FileRepository = require('../repositories/file-repository');
+
+const log = (ctx, msg) =>
+  console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Download] ${ctx} → ${msg}`);
 
 class DownloadOrchestrator {
   constructor() {
     this._anexoService = new AnexoBrowserService();
     this._organizer = new FileOrganizerService();
-    // Nome do usuário no SISCON (vem em MAIÚSCULO na grid)
+    this._fileRepo = new FileRepository();
     this._currentUser = (config.siscon.user || '').toUpperCase();
+    log('init', `usuário atual = ${this._currentUser}`);
   }
 
   /**
    * Verifica se há anexo novo e baixa se necessário.
-   *
-   * @param {number} protocolo
-   * @param {string|null} lastTimestampISO
-   * @returns {Promise<{baixou: boolean, message: string, timestamp?: string, nome?: string, destPath?: string}>}
    */
   async checkAndDownload(protocolo, lastTimestampISO) {
+    log(`#${protocolo}`, `iniciando (timestamp salvo = ${lastTimestampISO || 'nunca'})`);
+
     const latest = await this._anexoService.getLatestTimestamp(protocolo);
     if (!latest) {
+      log(`#${protocolo}`, 'SEM ANEXOS');
       return { baixou: false, message: `Sem anexos para #${protocolo}` };
     }
 
-    // 1. Se o timestamp não mudou, verifica se o arquivo ainda existe no disco
+    log(`#${protocolo}`, `servidor → "${latest.nome}" | ${latest.timestamp} | por ${latest.incluidoPor}`);
+
+    // 1. Timestamp: verifica servidor vs salvo
     if (lastTimestampISO && latest.timestamp <= lastTimestampISO) {
-      const destPath = this._organizer.getDestPath({
-        protocolo,
-        fileName: latest.nome,
-      });
-      if (fs.existsSync(destPath)) {
-        return {
-          baixou: false,
-          message: `Anexo já verificado: ${latest.nome}`,
-          timestamp: latest.timestamp,
-          nome: latest.nome,
-        };
+      const destPath = this._organizer.getDestPath({ protocolo, fileName: latest.nome });
+      const arquivoExiste = this._fileRepo.exists(destPath);
+
+      log(`#${protocolo}`, `timestamp igual (${latest.timestamp}) — arquivo: ${arquivoExiste ? 'EXISTE' : 'DELETADO'}`);
+      if (arquivoExiste) {
+        log(`#${protocolo}`, 'DECISÃO: PULAR');
+        return { baixou: false, message: `Anexo já verificado: ${latest.nome}`, timestamp: latest.timestamp, nome: latest.nome };
       }
-      // Arquivo foi deletado do disco — continua para baixar de novo
+      log(`#${protocolo}`, 'arquivo deletado — vai re-baixar');
     }
 
-    // 2. Se o último anexo é do próprio usuário, não baixa
+    // 2. Autor
     const autor = (latest.incluidoPor || '').toUpperCase().trim();
     if (autor === this._currentUser) {
-      return {
-        baixou: false,
-        message: `Anexo de ${autor} — próprio usuário, download ignorado`,
-        timestamp: latest.timestamp,
-        nome: latest.nome,
-        incluidoPor: latest.incluidoPor,
-      };
+      log(`#${protocolo}`, `DECISÃO: PULAR — próprio usuário (${autor})`);
+      return { baixou: false, message: `Anexo de ${autor} — próprio usuário`, timestamp: latest.timestamp, nome: latest.nome, incluidoPor: latest.incluidoPor };
     }
 
-    // 3. Novidade de outro usuário! Baixa e organiza
-    const destPath = this._organizer.getDestPath({
-      protocolo,
-      fileName: latest.nome,
-    });
-    this._organizer.ensureDir(destPath);
-    await this._anexoService.downloadFile(latest.downloadUrl, destPath);
+    // 3. Download
+    log(`#${protocolo}`, 'DECISÃO: BAIXAR');
+    const destPath = this._organizer.getDestPath({ protocolo, fileName: latest.nome });
 
-    return {
-      baixou: true,
-      message: `📎 ${latest.nome} (de ${latest.incluidoPor})`,
-      timestamp: latest.timestamp,
-      nome: latest.nome,
-      incluidoPor: latest.incluidoPor,
-      destPath,
-    };
+    try {
+      const buffer = await this._anexoService.downloadFile(latest.downloadUrl);
+      this._fileRepo.writeFile(destPath, buffer);
+      this._fileRepo.removePartialDownload(destPath);
+
+      const stat = this._fileRepo.stat(destPath);
+      log(`#${protocolo}`, `DOWNLOAD OK — ${stat ? (stat.size / 1024).toFixed(1) : '?'} KB`);
+    } catch (err) {
+      log(`#${protocolo}`, `ERRO: ${err.message}`);
+      throw err;
+    }
+
+    return { baixou: true, message: `📎 ${latest.nome} (de ${latest.incluidoPor})`, timestamp: latest.timestamp, nome: latest.nome, incluidoPor: latest.incluidoPor, destPath };
   }
 
-  /** Força download (ignora timestamp e autor) */
-  async execute(protocolo) {
-    const latest = await this._anexoService.getLatestTimestamp(protocolo);
-    if (!latest) {
-      return { baixou: false, message: `Sem anexos para #${protocolo}` };
+  /**
+   * Verifica anexos de uma lista de solicitações (chamado pelo polling).
+   * Contém a REGRA de negócio: quais protocolos verificar.
+   */
+  async checkAllAttachments(solicitacoes, anexosState) {
+    const results = [];
+    for (const sol of solicitacoes) {
+      const proto = sol.protocolo;
+      const stored = anexosState[String(proto)];
+      const situacao = (sol.situacao || '').toLowerCase();
+      const isActive = !['finalizado', 'cancelado', 'recusado', 'aprovado'].includes(situacao);
+
+      // Pula finalizados já verificados
+      if (!isActive && stored) {
+        log('checkAll', `#${proto} finalizado e já verificado — pulando`);
+        continue;
+      }
+
+      const result = await this.checkAndDownload(proto, stored?.lastTimestamp || null);
+      if (result.baixou || (!stored && result.timestamp)) {
+        result.protocolo = proto;
+        results.push(result);
+      }
     }
+    return results;
+  }
+
+  /** Força download (ignora regras) */
+  async execute(protocolo) {
+    log(`#${protocolo}`, 'FORÇADO');
+    const latest = await this._anexoService.getLatestTimestamp(protocolo);
+    if (!latest) return { baixou: false, message: `Sem anexos para #${protocolo}` };
+
     const destPath = this._organizer.getDestPath({ protocolo, fileName: latest.nome });
-    this._organizer.ensureDir(destPath);
-    await this._anexoService.downloadFile(latest.downloadUrl, destPath);
-    return {
-      baixou: true, message: `📎 ${latest.nome}`,
-      timestamp: latest.timestamp, nome: latest.nome, destPath,
-    };
+    const buffer = await this._anexoService.downloadFile(latest.downloadUrl);
+    this._fileRepo.writeFile(destPath, buffer);
+    this._fileRepo.removePartialDownload(destPath);
+
+    const stat = this._fileRepo.stat(destPath);
+    log(`#${protocolo}`, `FORÇADO OK — ${stat ? (stat.size / 1024).toFixed(1) : '?'} KB`);
+    return { baixou: true, message: `📎 ${latest.nome}`, timestamp: latest.timestamp, nome: latest.nome, destPath };
   }
 
   async close() {

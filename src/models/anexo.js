@@ -24,6 +24,9 @@ class Anexo {
   get downloadUrl() { return this._downloadUrl; }
   get protocolo() { return this._protocolo; }
 
+  /** Chave única para mapas de comparação */
+  get key() { return this._protocolo; }
+
   toJSON() {
     return {
       nome: this._nome,

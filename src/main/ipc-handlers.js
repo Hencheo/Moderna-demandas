@@ -2,13 +2,16 @@
  * src/main/ipc-handlers.js
  * Camada Controller — handlers de IPC do Electron.
  *
- * Princípio: CONTROLLER É THIN (não contém regra de negócio).
+ * Princípio: CONTROLLER É THIN.
  * - Cada handler recebe a requisição, chama o service adequado, retorna resultado.
- * - Nunca acessa dados diretamente (quem acessa é o repository).
- * - Nunca contém lógica de scraping, diff, ou autenticação.
+ * - NUNCA contém regra de negócio.
+ * - NUNCA acessa dados diretamente.
  */
 const { ipcMain, Notification } = require('electron');
 const config = require('../config');
+
+const log = (ctx, msg) =>
+  console.log(`[${new Date().toLocaleTimeString('pt-BR')}] [Poll] ${ctx} → ${msg}`);
 
 class IpcHandlers {
   constructor(deps) {
@@ -22,27 +25,6 @@ class IpcHandlers {
     this._orchestrator = null;
   }
 
-  /** Registra todos os handlers IPC */
-  register() {
-    ipcMain.handle('poll-now', async () => this._executePoll());
-    ipcMain.handle('start-polling', async () => {
-      this._stopPoll();
-      await this._executePoll();
-      this._pollInterval = setInterval(
-        () => this._executePoll(),
-        config.polling.intervalMs
-      );
-      return true;
-    });
-    ipcMain.handle('stop-polling', async () => {
-      this._stopPoll();
-      return true;
-    });
-    ipcMain.handle('download-latest', async (_event, protocolo) => {
-      return this._getOrchestrator().execute(protocolo);
-    });
-  }
-
   _getOrchestrator() {
     if (!this._orchestrator) {
       const DownloadOrchestrator = require('../services/download-orchestrator');
@@ -51,99 +33,67 @@ class IpcHandlers {
     return this._orchestrator;
   }
 
+  register() {
+    ipcMain.handle('poll-now', async () => this._executePoll());
+    ipcMain.handle('start-polling', async () => {
+      this._stopPoll();
+      await this._executePoll();
+      this._pollInterval = setInterval(() => this._executePoll(), config.polling.intervalMs);
+      return true;
+    });
+    ipcMain.handle('stop-polling', async () => { this._stopPoll(); return true; });
+    ipcMain.handle('download-latest', async (_event, protocolo) => {
+      return this._getOrchestrator().execute(protocolo);
+    });
+  }
+
   async _executePoll() {
+    log('poll', '--- INÍCIO ---');
     try {
-      // 1. Autenticação
       if (!this._auth.isLoggedIn) {
+        log('poll', 'autenticando...');
         await this._auth.login();
       }
 
-      // 2. Busca solicitações
+      log('poll', 'buscando solicitações...');
       const current = await this._scraper.fetchSolicitacoes();
+      current.forEach(s => log('poll', `  #${s.protocolo} — ${s.situacao}`));
 
-      // 3. Carrega estado anterior e compara
       const prevState = this._repo.load();
       const diff = this._diff.compare(prevState.solicitacoes, current);
+      log('poll', `diff → ${diff.novas.length} nova(s), ${diff.alteradas.length} alterada(s)`);
 
-      // 4. (NOVO) Verifica anexos das solicitações ativas
-      const downloads = [];
-      if (current.length > 0) {
-        try {
-          const results = await this._checkAttachments(current, prevState.anexos || {});
-          downloads.push(...results);
-        } catch (anexoErr) {
-          console.error('Anexo check error:', anexoErr.message);
-          // Não quebra o polling se anexos falharem
-        }
-      }
+      // Delega verificação de anexos ao orchestrator (service)
+      const downloads = current.length > 0
+        ? await this._getOrchestrator().checkAllAttachments(current, prevState.anexos || {})
+        : [];
 
-      // 5. Persiste novo estado (incluindo timestamps de anexos)
+      // Atualiza estado dos timestamps de anexos
       const anexosState = { ...(prevState.anexos || {}) };
       for (const d of downloads) {
         if (d.timestamp) {
-          anexosState[String(d.protocolo)] = {
-            lastTimestamp: d.timestamp,
-            lastFileName: d.nome,
-          };
+          anexosState[String(d.protocolo)] = { lastTimestamp: d.timestamp, lastFileName: d.nome };
         }
       }
       this._repo.save(current, anexosState);
 
-      // 6. Notifica o renderer
+      // Notifica renderer + sistema
+      const baixados = downloads.filter(d => d.baixou);
       this._sendToRenderer('poll-result', {
         solicitacoes: current.map(s => s.toJSON()),
         diff,
-        downloads: downloads.filter(d => d.baixou),
+        downloads: baixados,
       });
-
-      // 7. Notificações
       this._notifyIfChanged(diff);
-      this._notifyDownloads(downloads);
+      if (baixados.length > 0) this._notifyDownloads(baixados);
 
-      return {
-        solicitacoes: current.map(s => s.toJSON()),
-        diff,
-        downloads: downloads.filter(d => d.baixou),
-      };
+      log('poll', `--- FIM (${baixados.length} download(s)) ---`);
+      return { solicitacoes: current.map(s => s.toJSON()), diff, downloads: baixados };
     } catch (err) {
-      console.error('Poll error:', err.message);
+      log('poll', `ERRO: ${err.message}`);
       this._sendToRenderer('poll-error', err.message);
       return null;
     }
-  }
-
-  /**
-   * Verifica anexos de cada solicitação ativa.
-   * Só consulta via Puppeteer se o timestamp armazenado for antigo
-   * ou não existir (primeira vez).
-   */
-  async _checkAttachments(solicitacoes, anexosState) {
-    const results = [];
-    const orchestrator = this._getOrchestrator();
-
-    for (const sol of solicitacoes) {
-      const proto = sol.protocolo;
-      const stored = anexosState[String(proto)];
-
-      // Só verifica se: nunca verificou OU solicitação tem status ativo
-      const situacao = (sol.situacao || '').toLowerCase();
-      const isActive = !['finalizado', 'cancelado', 'recusado', 'aprovado'].includes(situacao);
-      if (!isActive && stored) continue; // Já verificamos e está finalizada
-
-      const result = await orchestrator.checkAndDownload(proto, stored?.lastTimestamp || null);
-      if (result.baixou) {
-        result.protocolo = proto;
-        results.push(result);
-      } else {
-        // Mesmo sem download, atualiza timestamp se for o primeiro contato
-        if (!stored && result.timestamp) {
-          result.protocolo = proto;
-          results.push(result);
-        }
-      }
-    }
-
-    return results;
   }
 
   _sendToRenderer(channel, data) {
@@ -155,39 +105,23 @@ class IpcHandlers {
   _notifyIfChanged(diff) {
     const total = diff.novas.length + diff.alteradas.length;
     if (total === 0) return;
-
-    const body = diff.novas
-      .map(s => `🆕 #${s.protocolo} - ${s.situacao}`)
+    const body = diff.novas.map(s => `🆕 #${s.protocolo} - ${s.situacao}`)
       .concat(diff.alteradas.map(s => `🔄 #${s.protocolo}`))
       .join('\n');
-
     if (Notification.isSupported()) {
-      new Notification({
-        title: `SISCON - ${total} atualização(ões)`,
-        body: body.slice(0, 200),
-      }).show();
+      new Notification({ title: `SISCON - ${total} atualização(ões)`, body: body.slice(0, 200) }).show();
     }
   }
 
   _notifyDownloads(downloads) {
-    const novos = downloads.filter(d => d.baixou);
-    if (novos.length === 0) return;
-
-    const body = novos.map(d => `📎 #${d.protocolo || ''} ${d.message}`).join('\n');
-
+    const body = downloads.map(d => `📎 #${d.protocolo || ''} ${d.message}`).join('\n');
     if (Notification.isSupported()) {
-      new Notification({
-        title: `SISCON - ${novos.length} novo(s) anexo(s)`,
-        body: body.slice(0, 200),
-      }).show();
+      new Notification({ title: `SISCON - ${downloads.length} novo(s) anexo(s)`, body: body.slice(0, 200) }).show();
     }
   }
 
   _stopPoll() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
+    if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
   }
 }
 

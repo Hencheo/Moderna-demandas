@@ -22,7 +22,7 @@ Cada camada tem **uma única responsabilidade** e nunca invade a camada vizinha.
 │   (Regras de negócio — testáveis, sem I/O direto)    │
 ├─────────────────────────────────────────────────────┤
 │                   src/repositories/                   │
-│   state-repository.js                                 │
+│   state-repository.js · file-repository.js           │
 │   (Acesso a dados — isola persistência)               │
 ├─────────────────────────────────────────────────────┤
 │                    src/models/                         │
@@ -72,8 +72,8 @@ ipcMain.handle('poll-now', async () => {
 | `auth-service.js` | Login no SISCON (ASP.NET Forms Auth) | `HttpClient`, `config` |
 | `ScraperService` | Parse do HTML da grid de listagem (Consultar.aspx) | `HttpClient` (autenticado), `Solicitacao` |
 | `AnexoBrowserService` | Extração de anexos via Puppeteer (grid ASP.NET AJAX) | Puppeteer, `Anexo` |
-| `FileOrganizerService` | Organização de arquivos baixados em pastas | `Anexo`, `config` |
-| `DownloadOrchestrator` | Orquestra: busca anexo mais recente → baixa → salva | `AnexoBrowserService`, `FileOrganizerService` |
+| `FileOrganizerService` | Decisão de caminho/data (sem I/O) | `config` |
+| `DownloadOrchestrator` | Orquestra + regras: timestamp, autor, verificação em lote | `AnexoBrowserService`, `FileOrganizerService`, `FileRepository` |
 | `diff-service.js` | Comparação entre estados | `Solicitacao`, `DiffResult` |
 
 **Regras:**
@@ -87,6 +87,7 @@ ipcMain.handle('poll-now', async () => {
 | Repositório | Responsabilidade |
 |---|---|
 | `state-repository.js` | Persistência do snapshot em JSON |
+| `file-repository.js` | I/O de arquivos (escrever, verificar, stat) |
 
 **Regras:**
 - ✅ Isola **como** os dados são armazenados (hoje JSON file, amanhã SQLite)
@@ -98,6 +99,7 @@ ipcMain.handle('poll-now', async () => {
 | Model | Campos |
 |---|---|
 | `Solicitacao` | protocolo, classificacao, cliente, sistema, versao, resumo, situacao, url |
+| `Anexo` | nome, incluidoPor, incluidoEm, tipo, publico, downloadUrl, protocolo |
 | `DiffResult` | novas, removidas, alteradas, totalAnterior, totalAtual, timestamp |
 
 **Regras:**
@@ -193,7 +195,7 @@ o download é pulado.
 
 ---
 
-## 3. Fluxo de Dados (exemplo: polling)
+## 4. Fluxo de Dados (exemplo: polling)
 
 ```
 Renderer                     Main Process                     SISCON
@@ -219,9 +221,9 @@ Renderer                     Main Process                     SISCON
 
 ---
 
-## 4. Convenções de Código
+## 5. Convenções de Código
 
-### 4.1 Nomenclatura
+### 5.1 Nomenclatura
 
 | Tipo | Padrão | Exemplo |
 |---|---|---|
@@ -231,7 +233,7 @@ Renderer                     Main Process                     SISCON
 | Constantes | UPPER_SNAKE | `POLL_INTERVAL_MS` |
 | Pastas | kebab-case | `src/services/` |
 
-### 4.2 Imports
+### 5.2 Imports
 
 ```js
 // Sempre use caminhos relativos com require
@@ -239,7 +241,7 @@ const AuthService = require('../services/auth-service');
 const { Solicitacao } = require('../models/solicitacao');
 ```
 
-### 4.3 Comentários de arquivo
+### 5.3 Comentários de arquivo
 
 Todo arquivo deve ter um header JSDoc:
 ```js
@@ -250,14 +252,14 @@ Todo arquivo deve ter um header JSDoc:
  */
 ```
 
-### 4.4 Testes
+### 5.4 Testes
 
 - Um arquivo de teste por service/repository
 - Nome: `nome-do-arquivo.test.js`
 - Local: junto ao fonte em `src/test/`
 - Rodar: `npm test` ou `npx jest --verbose`
 
-### 4.5 Tratamento de erros
+### 5.5 Tratamento de erros
 
 - Service lança `Error` com mensagem descritiva
 - IPC handler captura e envia `poll-error` pro renderer
@@ -265,7 +267,7 @@ Todo arquivo deve ter um header JSDoc:
 
 ---
 
-## 5. Limites e Responsabilidades (checklist para PR)
+## 6. Limites e Responsabilidades (checklist para PR)
 
 Antes de adicionar código novo, responda:
 
@@ -287,7 +289,7 @@ Antes de adicionar código novo, responda:
 
 ---
 
-## 6. Evolução futura (provável)
+## 7. Evolução futura (provável)
 
 | Hoje | Amanhã possível | Mudança |
 |---|---|---|

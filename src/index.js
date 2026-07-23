@@ -25,14 +25,6 @@ class SisconEngine {
   }
 
   async execute() {
-    if (this._auth.isLoggedIn) {
-      // Se já logou, tenta primeiro sem logar de novo
-      try {
-        return await this._scrapeAndDiff();
-      } catch (_) {
-        // Falhou, faz login completo
-      }
-    }
     await this._auth.login();
     return this._scrapeAndDiff();
   }
